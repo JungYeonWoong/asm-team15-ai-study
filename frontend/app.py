@@ -7,11 +7,13 @@ load_dotenv()
 import streamlit as st
 
 import state as s
+import style
 from screens import home, waiting, result
 from screens import round as round_screen
 
 st.set_page_config(page_title="Prompt Arena", page_icon="⚔️", layout="centered")
 
+style.apply()
 s.init_state()
 
 screen = st.session_state[s.SCREEN]
