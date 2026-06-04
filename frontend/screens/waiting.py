@@ -14,12 +14,17 @@ def render() -> None:
     st_autorefresh(interval=500, key="waiting_refresh")
 
     room_code = st.session_state[s.ROOM_CODE]
-    st.title("⏳ 대기 중")
-    st.write("방 코드를 상대방에게 알려주세요.")
-    st.code(room_code, language=None)
+    st.title("대기 중")
+    st.divider()
+
+    with st.container(border=True):
+        st.write("**방 코드**")
+        st.code(room_code, language=None)
+        st.caption("상대방에게 이 코드를 알려주세요.")
+
     st.info("상대방을 기다리는 중입니다...")
 
-    if st.button("❌ 취소", use_container_width=True):
+    if st.button("취소", use_container_width=True, type="secondary"):
         _leave()
         return
 
@@ -56,7 +61,7 @@ def _poll_events() -> None:
             changed = True
 
         elif ev == "WAITING":
-            pass  # 이미 대기 화면, 무시
+            pass
 
         elif ev == "WS_CLOSED":
             st.error("서버 연결이 끊어졌습니다.")
