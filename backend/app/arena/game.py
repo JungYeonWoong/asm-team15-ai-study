@@ -20,6 +20,7 @@ from app.rooms.domain import Player, Room, RoomManager, RoomStatus
 from . import ai_client as ai
 from .ai_client import AIClient, AICallError, MockAIClient, UpstageAIClient
 from .domain import PlayerResult, RoundResult, Task
+from .safety import PromptSafety
 from .scoring import compute_score
 from .tasks import pick_task
 
@@ -27,9 +28,17 @@ from .tasks import pick_task
 class GameServer:
     """대전 서버. FastAPI app.state 에 하나 보관된다."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        history=None,
+        safety: Optional[PromptSafety] = None,
+    ) -> None:
         self.settings = settings
         self.rooms = RoomManager()
+        self.history = history  # InMemoryHistoryStore or None
+        self.safety = safety or PromptSafety(extra_banned=settings.banned_words)
 
         # 테스트/오버라이드용 훅
         self.time_limit: float = settings.time_limit
@@ -37,6 +46,7 @@ class GameServer:
         self.ai_max_retries: int = settings.ai_max_retries
         self.ai_client: Optional[AIClient] = None  # 설정 시 항상 이 클라이언트 사용
         self.task_override: Optional[Task] = None   # 설정 시 항상 이 과제 배정
+        self._upstage_client: Optional[UpstageAIClient] = None  # 커넥션 풀 재사용
         self._rng = random.Random()
 
     # ------------------------------------------------------------------
@@ -46,9 +56,11 @@ class GameServer:
         if self.ai_client is not None:
             return self.ai_client
         if self.settings.ai_backend == "upstage" and self.settings.upstage_api_key:
-            return UpstageAIClient(
-                self.settings.upstage_api_key, self.settings.upstage_base_url
-            )
+            if self._upstage_client is None:
+                self._upstage_client = UpstageAIClient(
+                    self.settings.upstage_api_key, self.settings.upstage_base_url
+                )
+            return self._upstage_client
         # 데모 기본값: 과제 정답표를 알고 있는 결정론적 목 클라이언트
         answer_key = {tc.input: tc.expected for tc in task.test_cases}
         return MockAIClient(answer_key=answer_key)
@@ -147,16 +159,33 @@ class GameServer:
                     },
                 )
             else:
-                player.submitted = True
-                player.prompt_text = text
-                # 제출 완료 → 상대 제출 대기 안내
-                await self._safe_send(
-                    player.websocket,
-                    {
-                        "event": "WAITING",
-                        "message": "상대방을 기다리는 중입니다...",
-                    },
-                )
+                safety_result = self.safety.validate(text)
+                if not safety_result.ok:
+                    player.unsafe = True
+                    player.prompt_text = ""
+                    await self._safe_send(
+                        player.websocket,
+                        {
+                            "event": "ERROR",
+                            "code": "SERVER_ERROR",
+                            "message": (
+                                f"부적절한 프롬프트로 판단되어 제출이 거부되었습니다. "
+                                f"자동 패배 처리됩니다. ({safety_result.reason})"
+                            ),
+                            "action_required": "GO_TO_HOME",
+                        },
+                    )
+                else:
+                    player.submitted = True
+                    player.prompt_text = text
+                    # 제출 완료 → 상대 제출 대기 안내
+                    await self._safe_send(
+                        player.websocket,
+                        {
+                            "event": "WAITING",
+                            "message": "상대방을 기다리는 중입니다...",
+                        },
+                    )
 
             await self._maybe_finalize(room)
 
@@ -220,31 +249,34 @@ class GameServer:
         assert room.task is not None
         players = list(room.players.values())
 
-        # 1) 채점 (유효 제출 플레이어만 AI 호출)
+        # 1) 채점 (유효 제출 플레이어만 AI 호출, 병렬)
         client = self._build_ai_client(room.task)
+
+        async def _grade_one(player: Player) -> None:
+            if player.submitted:
+                correct, total, sample = await ai.grade(
+                    client,
+                    room.task.model,
+                    player.prompt_text,
+                    room.task.test_cases,
+                    max_retries=self.ai_max_retries,
+                )
+                player.correct_count = correct
+                player.total_count = total
+                player.ai_response = sample
+                player.score = compute_score(
+                    correct, total, len(player.prompt_text),
+                    self.max_prompt_length,
+                )
+            else:
+                # 타임아웃 / 글자수 초과 → 점수 0
+                player.correct_count = 0
+                player.total_count = room.task.total_count
+                player.ai_response = ""
+                player.score = 0.0
+
         try:
-            for player in players:
-                if player.submitted:
-                    correct, total, sample = await ai.grade(
-                        client,
-                        room.task.model,
-                        player.prompt_text,
-                        room.task.test_cases,
-                        max_retries=self.ai_max_retries,
-                    )
-                    player.correct_count = correct
-                    player.total_count = total
-                    player.ai_response = sample
-                    player.score = compute_score(
-                        correct, total, len(player.prompt_text),
-                        self.max_prompt_length,
-                    )
-                else:
-                    # 타임아웃 / 글자수 초과 → 점수 0
-                    player.correct_count = 0
-                    player.total_count = room.task.total_count
-                    player.ai_response = ""
-                    player.score = 0.0
+            await asyncio.gather(*(_grade_one(p) for p in players))
         except AICallError:
             await self._broadcast_ai_failure(room)
             self.rooms.close(room)
@@ -273,12 +305,32 @@ class GameServer:
                     ),
                 )
 
+        # 결과 기록 저장 (양 플레이어 각각)
+        if self.history is not None:
+            for player in players:
+                opponent = room.opponent_of(player.client_id)
+                self.history.record(
+                    user_id=player.client_id,
+                    room_code=room.room_code,
+                    task_id=room.task.id,
+                    result=result_map[player.client_id].value,
+                    winner_id=winner_id,
+                    my_score=player.score,
+                    opponent_score=opponent.score if opponent else 0.0,
+                    correct_count=player.correct_count,
+                    total_count=player.total_count,
+                    prompt_length=len(player.prompt_text),
+                )
+
         self.rooms.close(room)
 
     def _decide_results(
         self, players: list[Player]
     ) -> tuple[dict[str, RoundResult], Optional[str]]:
         """각 플레이어의 승패와 winner_id 를 정한다 (2인 기준)."""
+        if len(players) < 2:
+            p = players[0]
+            return {p.client_id: RoundResult.WIN}, p.client_id
         p1, p2 = players[0], players[1]
         result_map: dict[str, RoundResult] = {}
         winner_id: Optional[str] = None

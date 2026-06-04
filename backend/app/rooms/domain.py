@@ -32,6 +32,7 @@ class Player:
     prompt_text: str = ""          # 제출한 프롬프트 원문
     timed_out: bool = False        # 제한 시간 초과 (TIMEOUT 이벤트 대상)
     over_length: bool = False      # 글자 수 초과로 제출 거부 → 자동 패배
+    unsafe: bool = False           # 금칙어/주입 패턴으로 제출 거부 → 자동 패배
 
     # 채점 결과 (finalize 후 채워짐)
     correct_count: int = 0
@@ -42,12 +43,12 @@ class Player:
     @property
     def done(self) -> bool:
         """이 플레이어의 라운드 입력이 확정되었는지."""
-        return self.submitted or self.timed_out or self.over_length
+        return self.submitted or self.timed_out or self.over_length or self.unsafe
 
     @property
     def loss_forced(self) -> bool:
         """점수와 무관하게 패배가 확정되는 사유가 있는지."""
-        return self.timed_out or self.over_length
+        return self.timed_out or self.over_length or self.unsafe
 
 
 @dataclass

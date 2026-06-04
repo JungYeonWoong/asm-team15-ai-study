@@ -1,0 +1,44 @@
+# Prompt Arena 백엔드 로컬 개발용
+#
+# 사용:
+#   docker compose up -d               # 전체 기동 (Redis + 앱)
+#   docker compose up -d redis         # Redis만 기동 (앱은 로컬 실행)
+#   docker compose ps                  # 상태 확인
+#   docker compose logs -f backend     # 앱 로그 실시간
+#   docker compose exec redis redis-cli ping  # PONG
+#   docker compose down                # 정지 (볼륨 유지)
+#   docker compose down -v             # 정지 + 데이터 삭제
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: prompt-arena-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 2s
+    restart: unless-stopped
+
+  backend:
+    build: .
+    container_name: prompt-arena-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis-data:

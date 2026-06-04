@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path
-
-from app.core.deps import get_server
+from app.core.deps import CurrentUser, get_current_user, get_server
 
 from .domain import RoomStatus
 from .schemas import RoomCreatedResponse, RoomStatusResponse
@@ -16,18 +14,15 @@ router = APIRouter(prefix="/api/rooms", tags=["rooms"])
 
 @router.post("", response_model=RoomCreatedResponse, status_code=201)
 def create_room(
-    x_client_id: Optional[str] = Header(default=None),
+    user: CurrentUser = Depends(get_current_user),
     server=Depends(get_server),
 ):
     """2. 방 생성 — 호스트가 방을 만들고 방 코드를 발급받는다."""
-    if not x_client_id:
-        raise HTTPException(status_code=400, detail="X-Client-ID 헤더가 필요합니다.")
-
-    existing = server.rooms.room_of_client(x_client_id)
+    existing = server.rooms.room_of_client(user.user_id)
     if existing is not None and existing.status != RoomStatus.CLOSED:
         raise HTTPException(status_code=409, detail="이미 다른 방에 참여 중입니다.")
 
-    room = server.rooms.create(x_client_id)
+    room = server.rooms.create(user.user_id)
     return RoomCreatedResponse(
         room_code=room.room_code,
         status=room.status,

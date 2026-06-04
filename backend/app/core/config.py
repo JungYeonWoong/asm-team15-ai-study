@@ -30,6 +30,13 @@ class Settings:
         "UPSTAGE_BASE_URL", "https://api.upstage.ai/v1/solar"
     )
 
+    # 세션 스토어 / Redis 설정 — 비어있으면 InMemory 폴백 사용.
+    redis_url: str = os.getenv("REDIS_URL", "")
+    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "86400"))
+
+    # 금칙어 — 콤마 구분. 빈 문자열이면 기본 리스트만 사용.
+    banned_words: str = os.getenv("ARENA_BANNED_WORDS", "")
+
 
 def get_settings() -> Settings:
     return Settings()

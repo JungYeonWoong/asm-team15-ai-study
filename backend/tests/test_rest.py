@@ -10,7 +10,11 @@ def test_me_ok(client):
     cid = new_client_id()
     resp = client.get("/api/me", headers={"X-Client-ID": cid})
     assert resp.status_code == 200
-    assert resp.json() == {"client_id": cid, "status": "active"}
+    body = resp.json()
+    assert body["client_id"] == cid
+    assert body["status"] == "active"
+    # 인증 확장 후 추가 필드 (X-Client-ID 폴백 시 provider="client-id")
+    assert body.get("provider") == "client-id"
 
 
 def test_me_missing_header(client):
