@@ -13,6 +13,7 @@ Base URL: http://localhost:8000
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -33,15 +34,23 @@ from app.history.store import InMemoryHistoryStore
 from app.rooms.router import router as rooms_router
 from app.session.router import router as session_router
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     settings = app.state.settings
     if settings.database_url:
-        from app.db.database import init_engine, get_session_factory
-        init_engine(settings.database_url)
-        async with get_session_factory()() as db:
-            await app.state.task_repo.load(db)
+        try:
+            from app.db.database import init_engine, get_session_factory
+            init_engine(settings.database_url)
+            async with get_session_factory()() as db:
+                await app.state.task_repo.load(db)
+            logger.info("과제 풀을 DB에서 로드했습니다 (%d개).", len(app.state.task_repo._pool))
+        except Exception:
+            logger.exception("DB 과제 로드 실패 — 하드코딩 풀로 대체합니다.")
+    else:
+        logger.info("DATABASE_URL 미설정 — 하드코딩 과제 풀을 사용합니다.")
     yield
 
 

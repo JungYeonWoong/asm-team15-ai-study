@@ -245,15 +245,38 @@ function showResult(d) {
   $('resultPanel').style.display = 'block';
   $('resultBadge').textContent = d.result;
   $('resultBadge').className = 'result-badge ' + d.result;
+
+  const caseTable = (cases) => {
+    if (!cases || cases.length === 0) return '';
+    const rows = cases.map(c => {
+      const color = c.is_correct ? 'var(--win)' : 'var(--lose)';
+      const mark = c.is_correct ? '✓' : '✗';
+      const actual = (c.actual || '').replace(/</g, '&lt;');
+      return `<tr>
+        <td style="color:${color};font-weight:700;text-align:center">${c.index}</td>
+        <td><div style="max-height:80px;overflow-y:auto;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;font-size:12px">${actual}</div></td>
+        <td style="color:${color};font-weight:700;text-align:center;font-size:18px">${mark}</td>
+      </tr>`;
+    }).join('');
+    return `<table style="margin-top:8px">
+      <tr><th>#</th><th>AI 출력</th><th>결과</th></tr>
+      ${rows}
+    </table>`;
+  };
+
   const row = (x) => x ? `
     <tr><th>client_id</th><td>${x.client_id}</td></tr>
     <tr><th>정답/전체</th><td>${x.correct_count} / ${x.total_count}</td></tr>
     <tr><th>프롬프트 길이</th><td>${x.prompt_length}</td></tr>
-    <tr><th>점수</th><td><b>${x.score}</b></td></tr>
-    <tr><th>AI 응답</th><td>${(x.ai_response||'').replace(/</g,'&lt;')}</td></tr>` : '';
-  $('resultBody').innerHTML = `
-    <table><tr><th colspan="2">내 결과 (my_data)</th></tr>${row(d.my_data)}</table>
-    <table style="margin-top:10px"><tr><th colspan="2">상대 결과 (opponent_data)</th></tr>${row(d.opponent_data)}</table>`;
+    <tr><th>점수</th><td><b>${x.score}</b></td></tr>` : '';
+
+  const block = (title, x) => x ? `
+    <table><tr><th colspan="2">${title}</th></tr>${row(x)}</table>
+    ${caseTable(x.test_case_results)}` : '';
+
+  $('resultBody').innerHTML =
+    block('내 결과 (my_data)', d.my_data) +
+    block('<span style="margin-top:10px;display:block">상대 결과 (opponent_data)</span>', d.opponent_data);
 }
 
 function submitPrompt() {

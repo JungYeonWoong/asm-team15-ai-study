@@ -261,7 +261,7 @@ class GameServer:
 
         async def _grade_one(player: Player) -> None:
             if player.submitted:
-                correct, total, sample = await ai.grade(
+                correct, total, sample, case_results = await ai.grade(
                     client,
                     room.task.model,
                     player.prompt_text,
@@ -271,6 +271,7 @@ class GameServer:
                 player.correct_count = correct
                 player.total_count = total
                 player.ai_response = sample
+                player.test_case_results = case_results
                 player.score = compute_score(
                     correct, total, len(player.prompt_text),
                     self.max_prompt_length,
@@ -384,6 +385,7 @@ class GameServer:
             total_count=me.total_count,
             prompt_length=len(me.prompt_text),
             score=me.score,
+            test_case_results=me.test_case_results,
         ).to_dict()
 
         opp_data = None
@@ -396,6 +398,7 @@ class GameServer:
                 total_count=opponent.total_count,
                 prompt_length=len(opponent.prompt_text),
                 score=opponent.score,
+                test_case_results=opponent.test_case_results,
             ).to_dict()
 
         return {
