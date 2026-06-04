@@ -2,6 +2,9 @@
 
 ROUND_START 시 이 풀에서 과제를 하나 배정한다. 각 과제는 채점용
 테스트 케이스(N개)를 포함한다. expected 는 AI 출력과 이진 비교된다.
+
+각 과제는 5개 TC 를 가지며, GET /api/tasks 로는 정답을 제외한
+메타데이터(id/description/model/total_count)만 노출한다.
 """
 
 from __future__ import annotations
@@ -10,7 +13,10 @@ import random
 
 from .domain import Task, TestCase
 
-DEFAULT_MODEL = "Upstage-Solar-Pro"
+import os
+
+# Upstage 백엔드 사용 시 실제로 호출 가능한 모델명. 환경 변수로 오버라이드.
+DEFAULT_MODEL = os.getenv("ARENA_DEFAULT_MODEL", "solar-pro3")
 
 
 TASK_POOL: tuple[Task, ...] = (
@@ -50,6 +56,45 @@ TASK_POOL: tuple[Task, ...] = (
             TestCase(input="강력 추천합니다.", expected="POSITIVE"),
         ),
     ),
+    Task(
+        id="to-uppercase",
+        description="입력 영문을 대문자로만 출력하시오. 다른 문자는 출력하지 마시오.",
+        model=DEFAULT_MODEL,
+        test_cases=(
+            TestCase(input="hello", expected="HELLO"),
+            TestCase(input="prompt arena", expected="PROMPT ARENA"),
+            TestCase(input="upstage", expected="UPSTAGE"),
+            TestCase(input="ai is fun", expected="AI IS FUN"),
+            TestCase(input="solar pro", expected="SOLAR PRO"),
+        ),
+    ),
+    Task(
+        id="count-vowels",
+        description="영어 문장에 포함된 모음(a,e,i,o,u, 대소문자 무관)의 개수를 정수로 출력하시오.",
+        model=DEFAULT_MODEL,
+        test_cases=(
+            TestCase(input="hello", expected="2"),
+            TestCase(input="prompt", expected="1"),
+            TestCase(input="arena", expected="3"),
+            TestCase(input="education", expected="5"),
+            TestCase(input="sky", expected="0"),
+        ),
+    ),
+    Task(
+        id="json-keys",
+        description=(
+            "주어진 JSON 객체의 최상위 키들을 알파벳순으로 정렬해 "
+            "쉼표로 이어 출력하시오. 공백 없이."
+        ),
+        model=DEFAULT_MODEL,
+        test_cases=(
+            TestCase(input='{"name":"a","age":1}', expected="age,name"),
+            TestCase(input='{"b":1,"a":2,"c":3}', expected="a,b,c"),
+            TestCase(input='{"id":1}', expected="id"),
+            TestCase(input='{"zoo":"x","apple":"y"}', expected="apple,zoo"),
+            TestCase(input='{"k2":2,"k1":1,"k3":3}', expected="k1,k2,k3"),
+        ),
+    ),
 )
 
 
@@ -57,3 +102,16 @@ def pick_task(rng: random.Random | None = None) -> Task:
     """과제 풀에서 무작위로 하나를 배정한다."""
     chooser = rng or random
     return chooser.choice(TASK_POOL)
+
+
+def list_tasks_public() -> list[dict]:
+    """GET /api/tasks 응답용 — 정답 데이터는 제외."""
+    return [
+        {
+            "id": t.id,
+            "description": t.description,
+            "model": t.model,
+            "total_count": t.total_count,
+        }
+        for t in TASK_POOL
+    ]
