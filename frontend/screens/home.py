@@ -9,27 +9,35 @@ import ws_client
 
 
 def render() -> None:
-    st.title("⚔️ Prompt Arena")
+    st.title("Prompt Arena")
     st.caption("프롬프트로 승부하라")
     st.divider()
 
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("🆕 새 방 만들기", use_container_width=True):
-            _create_room()
+        with st.container(border=True):
+            st.write("**새 방 만들기**")
+            st.caption("방을 생성하고 코드를 상대에게 공유하세요.")
+            if st.button("새 방 만들기", use_container_width=True, type="primary"):
+                _create_room()
 
     with col2:
-        if st.button("🚪 방 참여하기", use_container_width=True):
-            st.session_state["_show_join_input"] = True
-
-    if st.session_state.get("_show_join_input"):
-        code = st.text_input("방 코드 입력 (4자리)", max_chars=4, key="join_code_input")
-        if st.button("입장", key="join_btn"):
-            if len(code) == 4:
-                _join_room(code)
-            else:
-                st.error("방 코드는 4자리 숫자입니다.")
+        with st.container(border=True):
+            st.write("**방 참여하기**")
+            st.caption("상대방에게 받은 4자리 코드를 입력하세요.")
+            code = st.text_input(
+                "방 코드",
+                max_chars=4,
+                key="join_code_input",
+                label_visibility="collapsed",
+                placeholder="0000",
+            )
+            if st.button("입장", use_container_width=True, type="secondary"):
+                if len(code) == 4:
+                    _join_room(code)
+                else:
+                    st.error("방 코드는 4자리 숫자입니다.")
 
 
 def _create_room() -> None:
