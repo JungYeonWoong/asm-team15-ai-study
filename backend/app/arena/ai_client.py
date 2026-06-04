@@ -78,12 +78,12 @@ class UpstageAIClient:
     """Upstage Solar Chat Completions API 호출 클라이언트."""
 
     def __init__(self, api_key: str, base_url: str) -> None:
+        import httpx  # httpx는 UpstageAIClient 사용 시에만 필요
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        self._http = httpx.AsyncClient(timeout=30.0)
 
     async def run(self, model: str, prompt: str, test_input: str) -> str:
-        import httpx
-
         url = f"{self.base_url}/chat/completions"
         payload = {
             "model": model,
@@ -94,11 +94,10 @@ class UpstageAIClient:
             "temperature": 0,
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+        resp = await self._http.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +117,7 @@ async def _call_with_retry(
         except Exception as exc:  # noqa: BLE001 - 모든 호출 오류를 재시도 대상으로
             last_exc = exc
             if attempt < max_retries - 1:
-                await asyncio.sleep(0)  # 백오프 자리 (테스트 속도 위해 0)
+                await asyncio.sleep(min(0.5 * (2 ** attempt), 10.0))
     raise AICallError(f"AI 모델 호출 {max_retries}회 실패") from last_exc
 
 
