@@ -7,6 +7,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 import state as s
+import ws_client
 
 
 def render() -> None:
@@ -18,7 +19,20 @@ def render() -> None:
     st.code(room_code, language=None)
     st.info("상대방을 기다리는 중입니다...")
 
+    if st.button("❌ 취소", use_container_width=True):
+        _leave()
+        return
+
     _poll_events()
+
+
+def _leave() -> None:
+    ws = st.session_state.get(s.WS_OBJECT)
+    if ws:
+        ws_client.close(ws)
+    s.reset_game_state()
+    st.session_state[s.SCREEN] = "home"
+    st.rerun()
 
 
 def _poll_events() -> None:

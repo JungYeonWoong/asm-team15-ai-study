@@ -42,6 +42,11 @@ def render() -> None:
         st.success("✅ 제출 완료! 상대방을 기다리는 중...")
         return
 
+    with st.expander("⚙️ 기타"):
+        if st.button("❌ 대전 포기", type="secondary"):
+            _leave()
+            return
+
     prompt = st.text_area(
         "프롬프트를 작성하세요",
         height=200,
@@ -60,6 +65,15 @@ def render() -> None:
             ws_client.send_submit(ws, prompt)
             st.session_state[s.SUBMITTED] = True
             st.rerun()
+
+
+def _leave() -> None:
+    ws = st.session_state.get(s.WS_OBJECT)
+    if ws:
+        ws_client.close(ws)
+    s.reset_game_state()
+    st.session_state[s.SCREEN] = "home"
+    st.rerun()
 
 
 def _poll_events() -> None:
