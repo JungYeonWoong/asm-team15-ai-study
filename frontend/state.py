@@ -58,6 +58,7 @@ def reset_game_state() -> None:
     game_keys = [
         ROOM_CODE, WS_THREAD, WS_CONNECTED, WS_OBJECT,
         TASK, MODEL, ROUND_START_AT, RESULT_PAYLOAD, SUBMITTED,
+        "_show_join_input", "join_code_input",
     ]
     for key in game_keys:
         if key in st.session_state:
