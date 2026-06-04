@@ -22,6 +22,7 @@ from .ai_client import AIClient, AICallError, MockAIClient, UpstageAIClient
 from .domain import PlayerResult, RoundResult, Task
 from .safety import PromptSafety
 from .scoring import compute_score
+from .task_repository import TaskRepository
 from .tasks import pick_task
 
 
@@ -34,11 +35,13 @@ class GameServer:
         *,
         history=None,
         safety: Optional[PromptSafety] = None,
+        task_repo: Optional[TaskRepository] = None,
     ) -> None:
         self.settings = settings
         self.rooms = RoomManager()
         self.history = history  # InMemoryHistoryStore or None
         self.safety = safety or PromptSafety(extra_banned=settings.banned_words)
+        self.task_repo: Optional[TaskRepository] = task_repo
 
         # 테스트/오버라이드용 훅
         self.time_limit: float = settings.time_limit
@@ -66,7 +69,11 @@ class GameServer:
         return MockAIClient(answer_key=answer_key)
 
     def _pick_task(self) -> Task:
-        return self.task_override or pick_task(self._rng)
+        if self.task_override:
+            return self.task_override
+        if self.task_repo is not None:
+            return self.task_repo.pick(self._rng)
+        return pick_task(self._rng)
 
     # ------------------------------------------------------------------
     # WebSocket 라이프사이클

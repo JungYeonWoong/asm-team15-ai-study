@@ -37,6 +37,9 @@ class Settings:
     # 금칙어 — 콤마 구분. 빈 문자열이면 기본 리스트만 사용.
     banned_words: str = os.getenv("ARENA_BANNED_WORDS", "")
 
+    # PostgreSQL (asyncpg). 비워두면 DB 기능 비활성.
+    database_url: str = os.getenv("DATABASE_URL", "")
+
 
 def get_settings() -> Settings:
     return Settings()
