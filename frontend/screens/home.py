@@ -5,6 +5,7 @@ import streamlit as st
 
 import api_client
 import state as s
+import ws_client
 
 
 def render() -> None:
@@ -36,8 +37,7 @@ def _create_room() -> None:
     try:
         room_code = api_client.create_room(client_id)
         st.session_state[s.ROOM_CODE] = room_code
-        st.session_state[s.SCREEN] = "waiting"
-        st.rerun()
+        _connect_ws_and_go_waiting()
     except Exception as e:
         st.error(f"방 생성 실패: {e}")
 
@@ -49,8 +49,7 @@ def _join_room(room_code: str) -> None:
             st.error("입장할 수 없는 방입니다. (이미 시작되었거나 존재하지 않음)")
             return
         st.session_state[s.ROOM_CODE] = room_code
-        st.session_state[s.SCREEN] = "waiting"
-        st.rerun()
+        _connect_ws_and_go_waiting()
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
             st.error("존재하지 않는 방 코드입니다.")
@@ -58,3 +57,20 @@ def _join_room(room_code: str) -> None:
             st.error(f"오류: {e}")
     except Exception as e:
         st.error(f"서버에 연결할 수 없습니다: {e}")
+
+
+def _connect_ws_and_go_waiting() -> None:
+    client_id = st.session_state[s.CLIENT_ID]
+    room_code = st.session_state[s.ROOM_CODE]
+    q = st.session_state[s.WS_QUEUE]
+    try:
+        ws = ws_client.connect(room_code, client_id)
+        t = ws_client.start_recv_thread(ws, q)
+        ws_client.send_join(ws)
+        st.session_state[s.WS_OBJECT] = ws
+        st.session_state[s.WS_THREAD] = t
+        st.session_state[s.WS_CONNECTED] = True
+        st.session_state[s.SCREEN] = "waiting"
+        st.rerun()
+    except Exception as e:
+        st.error(f"게임 서버 연결 실패: {e}")
