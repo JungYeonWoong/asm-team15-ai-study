@@ -17,20 +17,26 @@ def render() -> None:
 
     with col1:
         with st.container(border=True):
-            st.write("**새 방 만들기**")
-            st.caption("방을 생성하고 코드를 상대에게 공유하세요.")
+            st.write("")
+            st.markdown("#### 새 방 만들기")
+            st.caption("방을 생성하면 4자리 코드가 발급됩니다.")
+            st.caption("상대방에게 코드를 공유하고 입장을 기다리세요.")
+            st.write("")
+            st.write("")
             if st.button("새 방 만들기", use_container_width=True, type="primary"):
                 _create_room()
+            st.write("")
 
     with col2:
         with st.container(border=True):
-            st.write("**방 참여하기**")
+            st.write("")
+            st.markdown("#### 방 참여하기")
             st.caption("상대방에게 받은 4자리 코드를 입력하세요.")
+            st.write("")
             code = st.text_input(
                 "방 코드",
                 max_chars=4,
                 key="join_code_input",
-                label_visibility="collapsed",
                 placeholder="0000",
             )
             if st.button("입장", use_container_width=True, type="secondary"):
@@ -38,6 +44,7 @@ def render() -> None:
                     _join_room(code)
                 else:
                     st.error("방 코드는 4자리 숫자입니다.")
+            st.write("")
 
 
 def _create_room() -> None:

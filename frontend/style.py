@@ -46,6 +46,7 @@ h1, h2, h3 {
     box-shadow: 0 2px 8px rgba(255, 140, 0, 0.08) !important;
     padding: 4px !important;
 }
+
 </style>
 """
 
