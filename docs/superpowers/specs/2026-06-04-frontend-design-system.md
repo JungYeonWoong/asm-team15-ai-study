@@ -3,7 +3,7 @@
 **날짜:** 2026-06-04  
 **작성자:** 이정현  
 **대상 브랜치:** `feat/hyeon/frontend`  
-**범위:** 색상·폰트·이모지 — 레이아웃/로직 변경 없음
+**범위:** 색상·폰트·이모지·컴포넌트 레이아웃
 
 ---
 
@@ -122,13 +122,98 @@ WIN 결과만 🏆 유지. 나머지 제거.
 
 ---
 
-## 6. 변경 파일
+## 6. 컴포넌트 레이아웃
+
+### 카드 컴포넌트
+
+`st.container(border=True)` 사용. CSS로 모서리·그림자·테두리 색 보정.
+
+```css
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 12px !important;
+    border-color: #FFE0B2 !important;
+    box-shadow: 0 2px 8px rgba(255, 140, 0, 0.08) !important;
+    padding: 4px !important;
+}
+```
+
+### 홈 화면
+
+```
+Prompt Arena              ← h1, 중앙 정렬
+프롬프트로 승부하라         ← caption
+
+[카드: 새 방]  [카드: 방 참여]   ← st.columns(2)
+ 설명 텍스트    설명 텍스트
+ [새 방 만들기] 코드 입력 [  ]
+               [입장]
+```
+
+두 카드 높이 동일하게 맞춤. 버튼 `use_container_width=True`.
+
+### 대기 화면
+
+```
+대기 중                    ← h1
+
+[카드]
+  방 코드                  ← st.write("방 코드")
+  ┌─────────┐
+  │  1234   │              ← st.code(), 크게
+  └─────────┘
+  상대방에게 이 코드를 알려주세요 ← st.caption
+
+상대방을 기다리는 중입니다... ← st.info
+[취소]                      ← secondary 버튼, full width
+```
+
+### 라운드 화면
+
+```
+프롬프트 대전               ← h1
+
+[카드: 과제]
+  과제: {task}             ← st.info 내부
+  모델: {model}            ← st.caption
+
+남은 시간   02:45           ← st.metric (라벨 오렌지)
+
+[카드: 프롬프트 작성]
+  ┌──────────────────────┐
+  │ 텍스트 입력 (h=220)  │  ← st.text_area
+  └──────────────────────┘
+  글자수: 0 / 1200         ← st.caption, 우측 정렬 (columns 활용)
+  [제출]                   ← primary, full width
+
+⚙️ 기타 (expander)
+  [대전 포기]              ← secondary
+```
+
+### 결과 화면
+
+```
+🏆 승리! / 패배 / 무승부   ← st.success/error/warning
+
+결과 비교                  ← st.subheader
+
+[카드: 나]     [카드: 상대]  ← st.columns(2)
+ 내 프롬프트   상대 프롬프트
+ AI 응답       AI 응답
+ 정답: 8/10    정답: 7/10
+ 점수: 0.9200  점수: 0.8500
+
+[다시 하기]                ← primary, full width
+```
+
+---
+
+## 7. 변경 파일
 
 | 파일 | 변경 내용 |
 |------|-----------|
 | `frontend/style.py` (신규) | `apply()` — CSS 전역 inject |
-| `frontend/app.py` | `import style; style.apply()` 1줄 추가 |
-| `frontend/screens/home.py` | 타이틀 이모지 제거 |
-| `frontend/screens/waiting.py` | 타이틀·버튼 이모지 제거 |
-| `frontend/screens/round.py` | 타이틀·버튼·메시지 이모지 제거 |
-| `frontend/screens/result.py` | LOSE·DRAW·버튼·에러 메시지 이모지 제거 |
+| `frontend/app.py` | `style.apply()` 1줄 추가 |
+| `frontend/screens/home.py` | 카드 레이아웃 + 이모지 제거 |
+| `frontend/screens/waiting.py` | 카드 레이아웃 + 이모지 제거 |
+| `frontend/screens/round.py` | 카드 레이아웃 + 이모지 제거 |
+| `frontend/screens/result.py` | 카드 레이아웃 + 이모지 제거 |
