@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Prompt Arena 테스터</title>
+<style>
+  :root { --bg:#0f1117; --panel:#1a1d27; --line:#2b2f3a; --txt:#e6e8ee; --muted:#9aa0ad;
+          --accent:#6c8cff; --win:#3ecf8e; --lose:#ff6b6b; --warn:#ffb454; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:system-ui,'Segoe UI',sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:14px 18px; background:var(--panel); border-bottom:1px solid var(--line);
+           display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  .wrap { max-width:760px; margin:0 auto; padding:18px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:16px; margin-bottom:14px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+  input, textarea, select {
+    width:100%; background:#0f1117; border:1px solid var(--line); color:var(--txt);
+    border-radius:8px; padding:9px 10px; font-size:14px; font-family:inherit; }
+  textarea { resize:vertical; min-height:96px; }
+  .row { display:flex; gap:10px; }
+  .row > * { flex:1; }
+  button { cursor:pointer; background:var(--accent); color:#fff; border:none; border-radius:8px;
+           padding:10px 14px; font-size:14px; font-weight:600; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .pill { font-size:12px; padding:3px 9px; border-radius:999px; background:#0f1117;
+          border:1px solid var(--line); color:var(--muted); }
+  .pill.on { color:var(--win); border-color:var(--win); }
+  .pill.off { color:var(--lose); border-color:var(--lose); }
+  #timer { font-size:28px; font-weight:700; }
+  #log { font-family:ui-monospace,Consolas,monospace; font-size:12.5px; background:#0c0e14;
+         border:1px solid var(--line); border-radius:8px; padding:10px; height:240px;
+         overflow:auto; white-space:pre-wrap; }
+  .ev { padding:2px 0; }
+  .ev .tag { font-weight:700; }
+  .ROUND_START .tag{color:var(--accent)} .RESULT .tag{color:var(--win)}
+  .TIMEOUT .tag{color:var(--warn)} .ERROR .tag{color:var(--lose)} .WAITING .tag{color:var(--muted)}
+  .OUT .tag{color:#7dd3fc} .SYS .tag{color:#c084fc}
+  .result-badge{font-size:34px;font-weight:800;margin:6px 0}
+  .WIN{color:var(--win)} .LOSE{color:var(--lose)} .DRAW{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+  td,th{border:1px solid var(--line);padding:6px 8px;text-align:left}
+  th{color:var(--muted);font-weight:600}
+  small{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏟️ Prompt Arena 테스터</h1>
+  <span class="pill" id="connState">연결 안 됨</span>
+  <span style="flex:1"></span>
+  <small>탭 두 개로 호스트/게스트를 띄워 대전하세요</small>
+</header>
+
+<div class="wrap">
+  <!-- 설정 -->
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label>Base URL</label>
+        <input id="baseUrl" value="http://localhost:8000" />
+      </div>
+      <div>
+        <label>client_id (내 UUID)</label>
+        <input id="clientId" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px; align-items:flex-end;">
+      <div>
+        <label>방 코드 (room_code)</label>
+        <input id="roomCode" placeholder="예: 1234" />
+      </div>
+      <div style="flex:0 0 auto">
+        <button class="ghost" onclick="createRoom()">① 방 생성 (호스트)</button>
+      </div>
+      <div style="flex:0 0 auto">
+        <button class="ghost" onclick="checkRoom()">방 상태 조회</button>
+      </div>
+    </div>
+    <div style="margin-top:10px">
+      <button id="btnConnect" onclick="connect()">② 연결 &amp; JOIN</button>
+      <button class="ghost" id="btnDisconnect" onclick="disconnect()" disabled>연결 종료</button>
+    </div>
+  </div>
+
+  <!-- 대전 -->
+  <div class="panel">
+    <div style="display:flex; align-items:center; gap:16px;">
+      <div style="flex:1">
+        <small id="taskLabel">라운드 대기 중…</small>
+        <div><small id="modelLabel"></small></div>
+      </div>
+      <div id="timer">--</div>
+    </div>
+    <label>프롬프트 (최대 1200자) — <span id="charCount">0</span>/1200</label>
+    <textarea id="prompt" oninput="onPromptInput()" disabled
+      placeholder="ROUND_START 후 입력 가능합니다."></textarea>
+    <div style="margin-top:8px">
+      <button id="btnSubmit" onclick="submitPrompt()" disabled>③ 제출 (SUBMIT)</button>
+    </div>
+  </div>
+
+  <!-- 결과 -->
+  <div class="panel" id="resultPanel" style="display:none">
+    <div class="result-badge" id="resultBadge"></div>
+    <div id="resultBody"></div>
+  </div>
+
+  <!-- 로그 -->
+  <div class="panel">
+    <label>이벤트 로그</label>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+let ws = null, timerId = null;
+
+document.getElementById('clientId').value =
+  (crypto.randomUUID ? crypto.randomUUID() : 'cid-' + Math.random().toString(16).slice(2));
+
+const $ = (id) => document.getElementById(id);
+const baseUrl = () => $('baseUrl').value.replace(/\/$/, '');
+
+function log(tag, msg) {
+  const div = document.createElement('div');
+  div.className = 'ev ' + tag;
+  const t = new Date().toLocaleTimeString();
+  div.innerHTML = `<span class="tag">[${tag}]</span> <span style="color:#6b7280">${t}</span> ` +
+                  String(msg).replace(/</g,'&lt;');
+  $('log').appendChild(div);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function setConn(state, ok) {
+  const el = $('connState');
+  el.textContent = state;
+  el.className = 'pill ' + (ok === true ? 'on' : ok === false ? 'off' : '');
+}
+
+async function createRoom() {
+  try {
+    const r = await fetch(baseUrl() + '/api/rooms', {
+      method: 'POST', headers: { 'X-Client-ID': $('clientId').value },
+    });
+    const data = await r.json();
+    if (!r.ok) { log('SYS', '방 생성 실패: ' + JSON.stringify(data)); return; }
+    $('roomCode').value = data.room_code;
+    log('SYS', `방 생성됨 → room_code=${data.room_code} (이 코드를 다른 탭에 입력)`);
+  } catch (e) { log('SYS', '에러: ' + e + ' (서버가 켜져 있나요?)'); }
+}
+
+async function checkRoom() {
+  const code = $('roomCode').value.trim();
+  if (!code) return log('SYS', '방 코드를 입력하세요.');
+  try {
+    const r = await fetch(baseUrl() + '/api/rooms/' + code);
+    log('SYS', `방 상태(${code}): ` + JSON.stringify(await r.json()));
+  } catch (e) { log('SYS', '에러: ' + e); }
+}
+
+function connect() {
+  const code = $('roomCode').value.trim();
+  const cid = $('clientId').value.trim();
+  if (!code || !cid) return log('SYS', 'room_code 와 client_id 가 필요합니다.');
+
+  const wsBase = baseUrl().replace(/^http/, 'ws');
+  ws = new WebSocket(`${wsBase}/ws/arena/${code}?client_id=${encodeURIComponent(cid)}`);
+  setConn('연결 중…');
+
+  ws.onopen = () => {
+    setConn('연결됨', true);
+    $('btnConnect').disabled = true;
+    $('btnDisconnect').disabled = false;
+    ws.send(JSON.stringify({ action: 'JOIN' }));
+    log('OUT', '{ action: "JOIN" } 전송');
+  };
+
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    handleEvent(data);
+  };
+
+  ws.onclose = (e) => {
+    setConn('연결 끊김 (code ' + e.code + ')', false);
+    $('btnConnect').disabled = false;
+    $('btnDisconnect').disabled = true;
+    stopTimer();
+    if (e.code === 4001) log('SYS', '거부: client_id 누락');
+    else if (e.code === 4004) log('SYS', '거부: 입장 불가한 방(없음/진행중/정원초과)');
+  };
+
+  ws.onerror = () => log('SYS', 'WebSocket 에러');
+}
+
+function disconnect() { if (ws) ws.close(); }
+
+function handleEvent(data) {
+  const ev = data.event;
+  switch (ev) {
+    case 'WAITING':
+      log('WAITING', data.message); break;
+
+    case 'ROUND_START':
+      log('ROUND_START', `task="${data.task}" / model=${data.model} / time_limit=${data.time_limit}s`);
+      $('taskLabel').textContent = '과제: ' + data.task;
+      $('modelLabel').textContent = '모델: ' + data.model;
+      $('prompt').disabled = false;
+      $('btnSubmit').disabled = false;
+      startTimer(data.time_limit);
+      break;
+
+    case 'RESULT':
+      stopTimer();
+      log('RESULT', `result=${data.result} winner_id=${data.winner_id}`);
+      showResult(data);
+      lockRound();
+      break;
+
+    case 'TIMEOUT':
+      stopTimer();
+      log('TIMEOUT', data.message + ' (result=' + data.result + ')');
+      $('resultPanel').style.display = 'block';
+      $('resultBadge').textContent = data.result;
+      $('resultBadge').className = 'result-badge ' + data.result;
+      $('resultBody').innerHTML = '<small>' + data.message + '</small>';
+      lockRound();
+      break;
+
+    case 'ERROR':
+      stopTimer();
+      log('ERROR', `code=${data.code} / ${data.message} / action=${data.action_required}`);
+      lockRound();
+      break;
+
+    default:
+      log('SYS', '알 수 없는 이벤트: ' + JSON.stringify(data));
+  }
+}
+
+function showResult(d) {
+  $('resultPanel').style.display = 'block';
+  $('resultBadge').textContent = d.result;
+  $('resultBadge').className = 'result-badge ' + d.result;
+  const row = (x) => x ? `
+    <tr><th>client_id</th><td>${x.client_id}</td></tr>
+    <tr><th>정답/전체</th><td>${x.correct_count} / ${x.total_count}</td></tr>
+    <tr><th>프롬프트 길이</th><td>${x.prompt_length}</td></tr>
+    <tr><th>점수</th><td><b>${x.score}</b></td></tr>
+    <tr><th>AI 응답</th><td>${(x.ai_response||'').replace(/</g,'&lt;')}</td></tr>` : '';
+  $('resultBody').innerHTML = `
+    <table><tr><th colspan="2">내 결과 (my_data)</th></tr>${row(d.my_data)}</table>
+    <table style="margin-top:10px"><tr><th colspan="2">상대 결과 (opponent_data)</th></tr>${row(d.opponent_data)}</table>`;
+}
+
+function submitPrompt() {
+  if (!ws || ws.readyState !== 1) return log('SYS', '연결되어 있지 않습니다.');
+  const text = $('prompt').value;
+  ws.send(JSON.stringify({ action: 'SUBMIT', prompt_text: text }));
+  log('OUT', `{ action: "SUBMIT", prompt_text: (${text.length}자) }`);
+  $('btnSubmit').disabled = true;
+  $('prompt').disabled = true;
+}
+
+function lockRound() { $('btnSubmit').disabled = true; $('prompt').disabled = true; }
+
+function onPromptInput() {
+  const n = $('prompt').value.length;
+  $('charCount').textContent = n;
+  $('charCount').style.color = n > 1200 ? 'var(--lose)' : 'var(--muted)';
+}
+
+function startTimer(seconds) {
+  stopTimer();
+  let left = seconds;
+  $('timer').textContent = left + 's';
+  timerId = setInterval(() => {
+    left -= 1;
+    $('timer').textContent = (left > 0 ? left : 0) + 's';
+    if (left <= 0) stopTimer();
+  }, 1000);
+}
+function stopTimer() { if (timerId) { clearInterval(timerId); timerId = null; } }
+</script>
+</body>
+</html>
