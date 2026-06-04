@@ -26,45 +26,51 @@ def render() -> None:
     minutes = int(remaining) // 60
     seconds = int(remaining) % 60
 
-    st.title("✍️ 프롬프트 대전")
-    st.info(f"**과제:** {task}")
-    st.caption(f"모델: {model}")
+    st.title("프롬프트 대전")
+
+    with st.container(border=True):
+        st.info(f"**과제:** {task}")
+        st.caption(f"모델: {model}")
+
     st.divider()
 
     if remaining <= 0:
-        st.error("⏰ 시간 초과! 서버 처리 중...")
+        st.error("시간 초과! 서버 처리 중...")
         return
 
     st.metric("남은 시간", f"{minutes:02d}:{seconds:02d}")
     st.divider()
 
     if submitted:
-        st.success("✅ 제출 완료! 상대방을 기다리는 중...")
+        st.success("제출 완료! 상대방을 기다리는 중...")
         return
 
+    with st.container(border=True):
+        prompt = st.text_area(
+            "프롬프트를 작성하세요",
+            height=220,
+            max_chars=1200,
+            key="prompt_input",
+            placeholder="여기에 프롬프트를 작성하세요...",
+        )
+        char_count = len(prompt)
+        _, right = st.columns([3, 1])
+        with right:
+            st.caption(f"{char_count} / 1200")
+
+        if st.button("제출", type="primary", use_container_width=True):
+            if char_count == 0:
+                st.warning("프롬프트를 입력해주세요.")
+            else:
+                ws = st.session_state[s.WS_OBJECT]
+                ws_client.send_submit(ws, prompt)
+                st.session_state[s.SUBMITTED] = True
+                st.rerun()
+
     with st.expander("⚙️ 기타"):
-        if st.button("❌ 대전 포기", type="secondary"):
+        if st.button("대전 포기", type="secondary"):
             _leave()
             return
-
-    prompt = st.text_area(
-        "프롬프트를 작성하세요",
-        height=200,
-        max_chars=1200,
-        key="prompt_input",
-        placeholder="여기에 프롬프트를 작성하세요...",
-    )
-    char_count = len(prompt)
-    st.caption(f"글자수: {char_count} / 1200")
-
-    if st.button("📤 제출", type="primary", use_container_width=True):
-        if char_count == 0:
-            st.warning("프롬프트를 입력해주세요.")
-        else:
-            ws = st.session_state[s.WS_OBJECT]
-            ws_client.send_submit(ws, prompt)
-            st.session_state[s.SUBMITTED] = True
-            st.rerun()
 
 
 def _leave() -> None:
@@ -103,7 +109,7 @@ def _poll_events() -> None:
             changed = True
 
         elif ev == "WAITING":
-            pass  # 제출 후 상대 대기 중, 무시
+            pass
 
     if changed:
         st.rerun()
