@@ -453,7 +453,12 @@ WebSocket 연결 직후 즉시 전송합니다.
     "correct_count": 8,
     "total_count": 10,
     "prompt_length": 340,
-    "score": 0.92
+    "score": 0.92,
+    "test_case_results": [
+      { "index": 1, "actual": "AI 실제 출력 1", "is_correct": true },
+      { "index": 2, "actual": "AI 실제 출력 2", "is_correct": false }
+    ],
+    "prompt_evaluation": "AI가 출력을 보고 작성한 프롬프트 총평"
   },
   "opponent_data": {
     "client_id": "상대 UUID",
@@ -462,7 +467,12 @@ WebSocket 연결 직후 즉시 전송합니다.
     "correct_count": 7,
     "total_count": 10,
     "prompt_length": 520,
-    "score": 0.85
+    "score": 0.85,
+    "test_case_results": [
+      { "index": 1, "actual": "AI 실제 출력 1", "is_correct": true },
+      { "index": 2, "actual": "AI 실제 출력 2", "is_correct": true }
+    ],
+    "prompt_evaluation": "AI가 출력을 보고 작성한 프롬프트 총평"
   }
 }
 ```
@@ -477,6 +487,8 @@ WebSocket 연결 직후 즉시 전송합니다.
 
 - `winner_id` 는 무승부 시 `null`.
 - 점수가 같으면 `DRAW`. 한쪽만 자동 패배(타임아웃/글자수 초과/안전 필터 위반)면 점수와 무관하게 상대가 `WIN`.
+- `opponent_data` 는 상대 정보가 없을 때(부전승 직후 상대 객체 소멸 등) `null` 일 수 있으니, 항상 존재한다고 가정하지 마세요.
+- `by_forfeit` 키는 부전승 `RESULT`(아래 *RESULT (부전승)* 참고)에만 `true` 로 포함됩니다. 일반·타임아웃 `RESULT` 에는 이 키가 없으므로, `by_forfeit === true` 인 경우만 부전승으로 판별하세요.
 
 **`my_data` / `opponent_data` 필드**
 
@@ -489,6 +501,20 @@ WebSocket 연결 직후 즉시 전송합니다.
 | `total_count` | Integer | 전체 테스트 케이스 수 (N) |
 | `prompt_length` | Integer | 프롬프트 글자 수 (L) |
 | `score` | Float | 최종 점수 (0.0 ~ 1.0, 소수 4자리) |
+| `test_case_results` | Array | 케이스별 채점 결과. 각 원소는 `{ index, actual, is_correct }`. 입력·기대 출력은 미포함 |
+| `prompt_evaluation` | String | 채점 출력을 본 AI 가 작성한 프롬프트 총평. 미제출(타임아웃/거부)·평가 실패 시 빈 문자열 |
+
+**`test_case_results[]` 원소 필드**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `index` | Integer | 테스트 케이스 순번 (1-base) |
+| `actual` | String | 해당 케이스의 AI 실제 출력 |
+| `is_correct` | Boolean | 기대 출력과 일치 여부 |
+
+> 정답 비공개 원칙에 따라 각 케이스의 입력(`input`)·기대 출력(`expected`)은
+> 응답에 포함하지 않습니다. 자동 패배(타임아웃/글자수 초과/필터 위반)·부전승이면
+> 빈 배열(`[]`)입니다.
 
 #### TIMEOUT — 타임아웃
 
@@ -505,14 +531,42 @@ WebSocket 연결 직후 즉시 전송합니다.
 > 제때 제출한 상대는 `RESULT (result: "WIN")` 를 받으며, 그 `opponent_data.score`
 > 는 `0` 입니다. 양쪽 모두 타임아웃이면 둘 다 `TIMEOUT(result: "LOSE")` 을 받습니다.
 
+#### RESULT (부전승) — 상대 중도 이탈
+
+라운드 진행 중 상대가 연결을 끊으면(중도 탈주), 남은 플레이어(피탈주자)는
+점수와 무관하게 **부전승(WIN)** 으로 처리되며 다음 `RESULT` 를 받습니다.
+전적에도 피탈주자는 `WIN`, 탈주자는 `LOSE` 로 기록됩니다.
+
+```json
+{
+  "event": "RESULT",
+  "result": "WIN",
+  "winner_id": "남은 유저(피탈주자)의 UUID",
+  "by_forfeit": true,
+  "reason": "OPPONENT_DISCONNECTED",
+  "message": "상대방이 게임을 떠나 부전승으로 승리했습니다.",
+  "my_data": { "client_id": "내 UUID", "prompt": "내가 쓴 프롬프트", "...": "..." },
+  "opponent_data": { "client_id": "탈주자 UUID", "...": "..." }
+}
+```
+
+> 위 예시의 `"...": "..."` 는 *나머지 필드 생략* 표기입니다. `my_data`/`opponent_data`
+> 의 키 구성은 위 일반 `RESULT` 의 *`my_data` / `opponent_data` 필드* 표와 동일하며,
+> 부전승은 점수와 무관하므로 채점 필드(`correct_count`·`score` 등)는 `0`,
+> `test_case_results` 는 빈 배열(`[]`), `ai_response`·`prompt_evaluation` 은 빈 문자열로
+> 채워집니다. 일반 `RESULT` 와 구분하려면 `by_forfeit` 플래그를 확인하세요
+> (일반 `RESULT` 에는 이 키가 없습니다). 또한 상대 객체가 이미 사라졌다면
+> `opponent_data` 가 `null` 일 수 있습니다. 탈주자는 이미 연결이 끊겨 이벤트를
+> 받지 않습니다.
+
 #### ERROR — 에러 및 강제 처리
 
 ```json
 {
   "event": "ERROR",
-  "code": "OPPONENT_DISCONNECTED",
-  "message": "상대방의 연결이 끊어졌습니다. 부전승 처리됩니다.",
-  "action_required": "GO_TO_HOME"
+  "code": "AI_CALL_FAILED",
+  "message": "AI 모델 호출에 실패했습니다. 라운드를 다시 시도해 주세요.",
+  "action_required": "RETRY_ROUND"
 }
 ```
 
@@ -520,7 +574,6 @@ WebSocket 연결 직후 즉시 전송합니다.
 
 | 코드 | 설명 |
 |------|------|
-| `OPPONENT_DISCONNECTED` | 상대 연결 끊김, 부전승 처리 |
 | `AI_CALL_FAILED` | AI 호출 N회(기본 3회) 모두 실패, 라운드 무효 |
 | `SERVER_ERROR` | 글자 수 초과·금칙어·인젝션 패턴 등 기타 처리 |
 
@@ -566,6 +619,8 @@ WebSocket 연결 직후 즉시 전송합니다.
 | 글자 수 초과 제출 | 해당 제출 거부 + 자동 패배. 본인에게 `ERROR(code: SERVER_ERROR, action: GO_TO_HOME)` 발송 후 `RESULT(result: LOSE, score: 0)` 발송 |
 | 금칙어/인젝션 패턴 위반 | 글자 수 초과 처리와 동일하게 자동 패배 처리 |
 | 양쪽 모두 타임아웃 | 둘 다 `TIMEOUT(result: LOSE)` (무승부 아님) |
+| 상대 중도 이탈(탈주) | 남은 플레이어(피탈주자)는 `RESULT(result: WIN, by_forfeit: true)` 부전승. 전적은 피탈주자 WIN·탈주자 LOSE 기록 |
+| 프롬프트 평가 | 채점 완료 후, 같은 AI 모델에게 실제 출력을 보여주고 프롬프트 총평을 받아 `my_data.prompt_evaluation` 으로 전달. 부가 기능이라 실패해도 라운드는 정상 종료 |
 | 자동 패배 + 동점 | 자동 패배(타임아웃/초과/필터 위반) 사유가 있으면 점수가 같아도 상대가 `WIN` |
 | 점수 반올림 | 소수점 4자리 |
 | 종료된 방 | 저장소에서 제거 → 조회 시 `404` |

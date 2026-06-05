@@ -264,17 +264,26 @@ function showResult(d) {
     </table>`;
   };
 
+  const evalRow = (x) => (x && x.prompt_evaluation) ? `
+    <tr><th>프롬프트 평가</th><td><div style="white-space:pre-wrap;font-size:12px">${(x.prompt_evaluation||'').replace(/</g,'&lt;')}</div></td></tr>` : '';
+
   const row = (x) => x ? `
     <tr><th>client_id</th><td>${x.client_id}</td></tr>
     <tr><th>정답/전체</th><td>${x.correct_count} / ${x.total_count}</td></tr>
     <tr><th>프롬프트 길이</th><td>${x.prompt_length}</td></tr>
-    <tr><th>점수</th><td><b>${x.score}</b></td></tr>` : '';
+    <tr><th>점수</th><td><b>${x.score}</b></td></tr>
+    ${evalRow(x)}` : '';
 
   const block = (title, x) => x ? `
     <table><tr><th colspan="2">${title}</th></tr>${row(x)}</table>
     ${caseTable(x.test_case_results)}` : '';
 
+  const forfeit = d.by_forfeit ? `
+    <div style="padding:8px;margin-bottom:8px;border-radius:6px;background:#1e3a1e;color:var(--win);font-weight:700">
+      부전승 (상대 탈주) — ${d.message || ''}</div>` : '';
+
   $('resultBody').innerHTML =
+    forfeit +
     block('내 결과 (my_data)', d.my_data) +
     block('<span style="margin-top:10px;display:block">상대 결과 (opponent_data)</span>', d.opponent_data);
 }

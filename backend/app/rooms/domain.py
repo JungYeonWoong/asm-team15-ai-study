@@ -40,6 +40,7 @@ class Player:
     ai_response: str = ""
     score: float = 0.0
     test_case_results: list = field(default_factory=list)
+    prompt_evaluation: str = ""  # LLM 프롬프트 총평 (채점 후 채워짐)
 
     @property
     def done(self) -> bool:
