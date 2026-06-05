@@ -131,10 +131,10 @@ async def grade(
     prompt: str,
     test_cases: tuple[TestCase, ...],
     max_retries: int = 3,
-) -> tuple[int, int, str]:
+) -> tuple[int, int, str, list[dict]]:
     """프롬프트를 모든 테스트 케이스에 병렬 적용하고 채점한다.
 
-    Returns: (정답 수, 전체 수 N, 대표 응답 1개)
+    Returns: (정답 수, 전체 수 N, 대표 응답 1개, 케이스별 결과 리스트)
     실패 시 :class:`AICallError` 를 전파한다.
     """
     outputs = await asyncio.gather(
@@ -149,4 +149,12 @@ async def grade(
         if _normalize(output) == _normalize(tc.expected)
     )
     representative = outputs[0] if outputs else ""
-    return correct, len(test_cases), representative
+    case_results = [
+        {
+            "index": i + 1,
+            "actual": out,
+            "is_correct": _normalize(out) == _normalize(tc.expected),
+        }
+        for i, (tc, out) in enumerate(zip(test_cases, outputs))
+    ]
+    return correct, len(test_cases), representative, case_results

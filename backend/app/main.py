@@ -13,11 +13,15 @@ Base URL: http://localhost:8000
 
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.arena.game import GameServer
 from app.arena.router import router as arena_router
+from app.arena.task_repository import TaskRepository
 from app.arena.tasks_router import router as tasks_router
 from app.auth.providers import DevProvider, NicknameProvider
 from app.auth.router import router as auth_router
@@ -30,9 +34,28 @@ from app.history.store import InMemoryHistoryStore
 from app.rooms.router import router as rooms_router
 from app.session.router import router as session_router
 
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    settings = app.state.settings
+    if settings.database_url:
+        try:
+            from app.db.database import init_engine, get_session_factory
+            init_engine(settings.database_url)
+            async with get_session_factory()() as db:
+                await app.state.task_repo.load(db)
+            logger.info("과제 풀을 DB에서 로드했습니다 (%d개).", len(app.state.task_repo._pool))
+        except Exception:
+            logger.exception("DB 과제 로드 실패 — 하드코딩 풀로 대체합니다.")
+    else:
+        logger.info("DATABASE_URL 미설정 — 하드코딩 과제 풀을 사용합니다.")
+    yield
+
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Prompt Arena API", version="1.1-MVP")
+    app = FastAPI(title="Prompt Arena API", version="1.1-MVP", lifespan=_lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -43,6 +66,9 @@ def create_app() -> FastAPI:
 
     settings = get_settings()
     app.state.settings = settings
+
+    # 과제 레포지토리 (lifespan에서 DB 로드)
+    app.state.task_repo = TaskRepository()
 
     # 세션/인증
     app.state.session_store = build_session_store(settings.redis_url)
@@ -59,7 +85,11 @@ def create_app() -> FastAPI:
     app.state.history_store = InMemoryHistoryStore()
 
     # 대전 엔진
-    app.state.server = GameServer(settings, history=app.state.history_store)
+    app.state.server = GameServer(
+        settings,
+        history=app.state.history_store,
+        task_repo=app.state.task_repo,
+    )
 
     app.include_router(session_router)
     app.include_router(auth_router)

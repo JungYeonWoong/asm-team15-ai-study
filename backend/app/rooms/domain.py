@@ -39,6 +39,7 @@ class Player:
     total_count: int = 0
     ai_response: str = ""
     score: float = 0.0
+    test_case_results: list = field(default_factory=list)
 
     @property
     def done(self) -> bool:

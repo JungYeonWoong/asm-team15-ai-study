@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -45,6 +45,7 @@ class PlayerResult:
     total_count: int
     prompt_length: int
     score: float
+    test_case_results: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -55,4 +56,5 @@ class PlayerResult:
             "total_count": self.total_count,
             "prompt_length": self.prompt_length,
             "score": self.score,
+            "test_case_results": self.test_case_results,
         }
