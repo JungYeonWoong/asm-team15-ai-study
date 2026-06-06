@@ -125,6 +125,70 @@ def _normalize(text: str) -> str:
     return text.strip()
 
 
+# ---------------------------------------------------------------------------
+# 프롬프트 평가 (LLM 이 채점 결과/출력을 본 뒤 프롬프트를 총평)
+# ---------------------------------------------------------------------------
+# 채점이 끝난 뒤, 같은 모델에게 "이 프롬프트가 왜 이런 출력을 냈는지"를 보여주고
+# 강점/약점/개선 방향을 짧게 평가하게 한다. system 메시지로 들어간다.
+PROMPT_EVAL_SYSTEM = (
+    "당신은 프롬프트 엔지니어링 평가자입니다. "
+    "참가자가 작성한 프롬프트와, 그 프롬프트로 생성된 실제 출력 및 기대 출력을 "
+    "비교한 채점 결과가 주어집니다. 출력을 근거로 프롬프트의 강점과 약점, "
+    "구체적인 개선 방향을 한국어로 3줄 이내로 평가하세요. "
+    "프롬프트 자체를 대신 작성해 주지는 마세요."
+)
+
+
+def build_eval_input(
+    prompt: str,
+    test_cases: tuple[TestCase, ...],
+    outputs: list[str],
+) -> str:
+    """평가 LLM 에 넘길 사용자 메시지를 구성한다 (프롬프트 + 케이스별 입출력)."""
+    lines = [
+        "=== 참가자 프롬프트 ===",
+        prompt or "(빈 프롬프트)",
+        "",
+        "=== 채점 결과 (입력 / 기대 출력 / 실제 출력) ===",
+    ]
+    for i, tc in enumerate(test_cases):
+        actual = outputs[i] if i < len(outputs) else ""
+        verdict = "정답" if _normalize(actual) == _normalize(tc.expected) else "오답"
+        lines.append(
+            f"[{i + 1}] 입력={tc.input!r} 기대={tc.expected!r} "
+            f"실제={actual!r} → {verdict}"
+        )
+    lines.append("")
+    lines.append("위 출력을 근거로 이 프롬프트를 평가해 주세요.")
+    return "\n".join(lines)
+
+
+async def evaluate_prompt(
+    client: AIClient,
+    model: str,
+    prompt: str,
+    test_cases: tuple[TestCase, ...],
+    outputs: list[str],
+    *,
+    max_retries: int = 2,
+) -> str:
+    """채점 출력을 LLM 에게 보여주고 프롬프트 총평을 받는다.
+
+    평가는 부가 기능이므로 실패해도 라운드를 깨지 않고 빈 문자열을 반환한다.
+    빈 프롬프트는 평가 대상이 아니다.
+    """
+    if not prompt or not prompt.strip():
+        return ""
+    user_content = build_eval_input(prompt, test_cases, outputs)
+    try:
+        result = await _call_with_retry(
+            client, model, PROMPT_EVAL_SYSTEM, user_content, max_retries
+        )
+    except AICallError:
+        return ""
+    return _normalize(result)
+
+
 async def grade(
     client: AIClient,
     model: str,

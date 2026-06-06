@@ -159,19 +159,116 @@ async def test_submit_rejected_after_done():
 
 
 # ---------------------------------------------------------------------------
-# 연결 끊김 → 부전승
+# 중도 탈주 → 남은 사람(피탈주자) 부전승(WIN)
 # ---------------------------------------------------------------------------
-async def test_opponent_disconnect_forfeit():
+async def test_opponent_disconnect_forfeit_win():
     server = make_server(time_limit=30)
     host, guest = new_client_id(), new_client_id()
     room = server.rooms.create(host)
     wa, wb = await _join_both(server, room, host, guest)
 
+    # guest 가 라운드 도중 연결을 끊는다 → host 가 피탈주자
     await server.handle_disconnect(room, guest)
 
-    err = wa.last_of("ERROR")
-    assert err["code"] == "OPPONENT_DISCONNECTED"
-    assert err["action_required"] == "GO_TO_HOME"
+    res = wa.last_of("RESULT")
+    assert res["result"] == "WIN"
+    assert res["winner_id"] == host
+    assert res["by_forfeit"] is True
+    assert res["reason"] == "OPPONENT_DISCONNECTED"
+    assert res["my_data"]["client_id"] == host
+    assert res["opponent_data"]["client_id"] == guest
+    # 탈주자에게는 더 이상 아무것도 보내지 않는다 (연결이 끊긴 소켓)
+    assert not wb.has("RESULT")
+
+
+async def test_forfeit_win_after_my_submit():
+    """이미 제출을 마친 뒤 상대가 탈주해도 피탈주자가 승리한다."""
+    server = make_server(time_limit=30)
+    server.ai_client = make_scripted_ai({"HOST": ["a", "b", "c", "d"]})
+    host, guest = new_client_id(), new_client_id()
+    room = server.rooms.create(host)
+    wa, wb = await _join_both(server, room, host, guest)
+
+    await server.handle_submit(room, host, "HOST")  # host 제출 완료
+    await server.handle_disconnect(room, guest)     # guest 탈주
+
+    res = wa.last_of("RESULT")
+    assert res["result"] == "WIN"
+    assert res["winner_id"] == host
+    assert res["by_forfeit"] is True
+    # 내 프롬프트 원문은 결과에 그대로 보존된다
+    assert res["my_data"]["prompt"] == "HOST"
+
+
+async def test_forfeit_records_history_for_both():
+    """부전승 시 피탈주자는 WIN, 탈주자는 LOSE 로 전적이 기록된다."""
+    from app.history.store import InMemoryHistoryStore
+
+    server = make_server(time_limit=30)
+    server.history = InMemoryHistoryStore()
+    host, guest = new_client_id(), new_client_id()
+    room = server.rooms.create(host)
+    await _join_both(server, room, host, guest)
+
+    await server.handle_disconnect(room, guest)
+
+    host_hist = server.history.list_for(host)
+    guest_hist = server.history.list_for(guest)
+    assert len(host_hist) == 1 and host_hist[0].result == "WIN"
+    assert host_hist[0].winner_id == host
+    assert len(guest_hist) == 1 and guest_hist[0].result == "LOSE"
+    assert guest_hist[0].winner_id == host
+
+
+async def test_disconnect_before_round_no_forfeit():
+    """라운드 시작 전(WAITING) 이탈은 부전승이 아니다."""
+    server = make_server(time_limit=30)
+    host = new_client_id()
+    room = server.rooms.create(host)
+
+    wa = FakeWebSocket()
+    await server.handle_join(room, host, wa)  # host 만 입장 → WAITING
+    await server.handle_disconnect(room, host)
+
+    assert not wa.has("RESULT")
+
+
+# ---------------------------------------------------------------------------
+# 프롬프트 평가 (LLM 이 출력을 보고 총평)
+# ---------------------------------------------------------------------------
+async def test_result_includes_prompt_evaluation():
+    server = make_server()
+    server.ai_client = make_scripted_ai(
+        {"HOST": ["a", "b", "c", "d"], "GUEST": ["a"]}
+    )
+    host, guest = new_client_id(), new_client_id()
+    room = server.rooms.create(host)
+    wa, wb = await _join_both(server, room, host, guest)
+
+    await server.handle_submit(room, host, "HOST")
+    await server.handle_submit(room, guest, "GUEST")
+
+    res_a = wa.last_of("RESULT")
+    # 양쪽 모두 제출했으므로 본인/상대 모두 평가가 채워진다
+    assert res_a["my_data"]["prompt_evaluation"].startswith("총평:")
+    assert res_a["opponent_data"]["prompt_evaluation"].startswith("총평:")
+
+
+async def test_no_evaluation_for_non_submitter():
+    """타임아웃 등 미제출 플레이어는 평가가 비어 있다."""
+    server = make_server(time_limit=0.05)
+    server.ai_client = make_scripted_ai({"HOST": ["a", "b", "c", "d"]})
+    host, guest = new_client_id(), new_client_id()
+    room = server.rooms.create(host)
+    wa, wb = await _join_both(server, room, host, guest)
+
+    await server.handle_submit(room, host, "HOST")
+    await asyncio.sleep(0.2)  # guest 타임아웃
+
+    res_a = wa.last_of("RESULT")
+    assert res_a["my_data"]["prompt_evaluation"].startswith("총평:")
+    # 상대(타임아웃·미제출)는 평가 없음
+    assert res_a["opponent_data"]["prompt_evaluation"] == ""
 
 
 # ---------------------------------------------------------------------------

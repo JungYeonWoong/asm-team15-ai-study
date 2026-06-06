@@ -218,23 +218,93 @@ class GameServer:
                 player.websocket = None
 
             opponent = room.opponent_of(client_id)
-            # 라운드가 시작되었고 상대가 아직 남아있다면 부전승 처리
+            # 라운드가 시작되었고 상대가 아직 남아있다면 → 남은 사람(피탈주자) 부전승
             if room.status == RoomStatus.PLAYING and opponent is not None:
                 room.finalized = True
                 room.cancel_timers()
-                await self._safe_send(
-                    opponent.websocket,
-                    {
-                        "event": "ERROR",
-                        "code": "OPPONENT_DISCONNECTED",
-                        "message": "상대방의 연결이 끊어졌습니다. 부전승 처리됩니다.",
-                        "action_required": "GO_TO_HOME",
-                    },
+                await self._finalize_forfeit(
+                    room, winner=opponent, deserter_id=client_id
                 )
                 self.rooms.close(room)
             elif room.joined_count == 0:
                 # 아무도 안 남았으면 방 정리
                 self.rooms.close(room)
+
+    async def _finalize_forfeit(
+        self, room: Room, *, winner: Player, deserter_id: str
+    ) -> None:
+        """상대 중도 이탈 시 남은 플레이어를 부전승(WIN) 처리한다 (lock 보유).
+
+        탈주자는 점수와 무관하게 패배(LOSE), 피탈주자는 승리(WIN)로 확정한다.
+        피탈주자에게는 RESULT(result=WIN, by_forfeit=True) 를 발송하고,
+        히스토리에는 양쪽 결과를 모두 기록한다.
+        """
+        deserter = room.players.get(deserter_id)
+        task_total = room.task.total_count if room.task else 0
+
+        my_data = PlayerResult(
+            client_id=winner.client_id,
+            prompt=winner.prompt_text,
+            ai_response="",
+            correct_count=0,
+            total_count=task_total,
+            prompt_length=len(winner.prompt_text),
+            score=0.0,
+            test_case_results=[],
+        ).to_dict()
+
+        opp_data = None
+        if deserter is not None:
+            opp_data = PlayerResult(
+                client_id=deserter.client_id,
+                prompt=deserter.prompt_text,
+                ai_response="",
+                correct_count=0,
+                total_count=task_total,
+                prompt_length=len(deserter.prompt_text),
+                score=0.0,
+                test_case_results=[],
+            ).to_dict()
+
+        await self._safe_send(
+            winner.websocket,
+            {
+                "event": "RESULT",
+                "result": RoundResult.WIN.value,
+                "winner_id": winner.client_id,
+                "by_forfeit": True,
+                "reason": "OPPONENT_DISCONNECTED",
+                "message": "상대방이 게임을 떠나 부전승으로 승리했습니다.",
+                "my_data": my_data,
+                "opponent_data": opp_data,
+            },
+        )
+
+        if self.history is not None and room.task is not None:
+            self.history.record(
+                user_id=winner.client_id,
+                room_code=room.room_code,
+                task_id=room.task.id,
+                result=RoundResult.WIN.value,
+                winner_id=winner.client_id,
+                my_score=0.0,
+                opponent_score=0.0,
+                correct_count=0,
+                total_count=task_total,
+                prompt_length=len(winner.prompt_text),
+            )
+            self.history.record(
+                user_id=deserter_id,
+                room_code=room.room_code,
+                task_id=room.task.id,
+                result=RoundResult.LOSE.value,
+                winner_id=winner.client_id,
+                my_score=0.0,
+                opponent_score=0.0,
+                correct_count=0,
+                total_count=task_total,
+                prompt_length=len(deserter.prompt_text) if deserter else 0,
+            )
 
     # ------------------------------------------------------------------
     # 채점 / 종료
@@ -275,6 +345,17 @@ class GameServer:
                 player.score = compute_score(
                     correct, total, len(player.prompt_text),
                     self.max_prompt_length,
+                )
+                # 채점 출력을 LLM 에게 보여주고 프롬프트 총평을 받는다.
+                # (부가 기능: 실패해도 라운드는 정상 종료된다)
+                outputs = [cr["actual"] for cr in case_results]
+                player.prompt_evaluation = await ai.evaluate_prompt(
+                    client,
+                    room.task.model,
+                    player.prompt_text,
+                    room.task.test_cases,
+                    outputs,
+                    max_retries=self.ai_max_retries,
                 )
             else:
                 # 타임아웃 / 글자수 초과 → 점수 0
@@ -386,6 +467,7 @@ class GameServer:
             prompt_length=len(me.prompt_text),
             score=me.score,
             test_case_results=me.test_case_results,
+            prompt_evaluation=me.prompt_evaluation,
         ).to_dict()
 
         opp_data = None
@@ -399,6 +481,7 @@ class GameServer:
                 prompt_length=len(opponent.prompt_text),
                 score=opponent.score,
                 test_case_results=opponent.test_case_results,
+                prompt_evaluation=opponent.prompt_evaluation,
             ).to_dict()
 
         return {

@@ -46,6 +46,7 @@ class PlayerResult:
     prompt_length: int
     score: float
     test_case_results: list = field(default_factory=list)
+    prompt_evaluation: str = ""  # LLM 이 출력을 보고 작성한 프롬프트 총평
 
     def to_dict(self) -> dict:
         return {
@@ -57,4 +58,5 @@ class PlayerResult:
             "prompt_length": self.prompt_length,
             "score": self.score,
             "test_case_results": self.test_case_results,
+            "prompt_evaluation": self.prompt_evaluation,
         }

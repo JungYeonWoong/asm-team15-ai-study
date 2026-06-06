@@ -12,7 +12,7 @@ from typing import Iterable
 import pytest
 from fastapi.testclient import TestClient
 
-from app.arena.ai_client import CallableAIClient
+from app.arena.ai_client import PROMPT_EVAL_SYSTEM, CallableAIClient
 from app.arena.domain import Task, TestCase
 from app.arena.game import GameServer
 from app.core.config import Settings
@@ -42,6 +42,9 @@ def make_scripted_ai(correct_inputs_by_prompt: dict[str, Iterable[str]]):
     table = {p: set(inputs) for p, inputs in correct_inputs_by_prompt.items()}
 
     def fn(model: str, prompt: str, test_input: str) -> str:
+        # 채점 후 프롬프트 평가 호출은 system 메시지로 구분된다.
+        if prompt == PROMPT_EVAL_SYSTEM:
+            return "총평: 프롬프트가 의도를 잘 전달했습니다."
         if test_input in table.get(prompt, set()):
             return ANSWER_KEY[test_input]
         return "__WRONG__"
