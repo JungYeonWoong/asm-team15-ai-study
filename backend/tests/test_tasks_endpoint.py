@@ -8,7 +8,7 @@ def test_tasks_endpoint_returns_pool(client):
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body, list)
-    assert len(body) == 6  # 풀 크기 확장 확인
+    assert len(body) == 12  # 풀 크기 확장 확인
     ids = {t["id"] for t in body}
     assert {
         "translate-positive",
@@ -17,6 +17,11 @@ def test_tasks_endpoint_returns_pool(client):
         "to-uppercase",
         "count-vowels",
         "json-keys",
+        # 신규 추가 문제
+        "reverse-string",
+        "palindrome-check",
+        "roman-to-int",
+        "sql-injection-detect",
     }.issubset(ids)
 
     sample = body[0]

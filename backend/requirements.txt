@@ -4,6 +4,9 @@ pydantic>=2.10
 httpx>=0.28
 websockets>=14
 
+# --- 보스 레이드 디렉터 (LangGraph) ---
+langgraph>=0.2
+
 # --- session store ---
 redis>=5.2
 

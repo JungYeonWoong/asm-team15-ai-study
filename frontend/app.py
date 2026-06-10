@@ -1,21 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-PROMPT ARENA — Streamlit 프론트엔드
-15조 불꽃청년 · FastAPI/WebSocket 백엔드 연동본
+PROMPT ARENA — 협동 보스 레이드 · Streamlit 프론트엔드
+15조 불꽃청년 · FastAPI/WebSocket(LangGraph 디렉터) 백엔드 연동본
 
 실행:
   1) 백엔드 먼저 실행  (backend/)  →  python run.py   (http://localhost:8000)
   2) streamlit run app.py
 
-백엔드 API 명세(prompt_arena_api_spec.md)를 그대로 따른다.
   - REST : POST /api/rooms , GET /api/rooms/{code} , GET /api/me , GET /api/me/history , GET /api/tasks
-  - WS   : /ws/arena/{code}?client_id={uuid}   (JOIN / SUBMIT  ↔  WAITING / ROUND_START / RESULT / TIMEOUT / ERROR)
+  - WS   : /ws/raid/{code}?client_id={uuid}
+           (JOIN / SUBMIT  ↔  RAID_START / ROUND_START / TEAMMATE_SUBMITTED /
+            SUBMIT_REJECTED / ROUND_TIMEOUT / ROUND_RESULT / RAID_END / WAITING / ERROR)
   - 신원 : MVP 호환 X-Client-ID(프론트 생성 UUID) 헤더 사용
 """
 from __future__ import annotations
 
 import json
-import math
+import os
 import queue
 import threading
 import time
@@ -31,7 +32,7 @@ try:
 except Exception:  # 폴백: 패키지가 없으면 sleep+rerun 으로 폴링
     _HAS_AUTOREFRESH = False
 
-DEFAULT_BASE = "http://localhost:8000"
+DEFAULT_BASE = os.environ.get("ARENA_BASE_URL", "http://localhost:8000")
 MAX_LEN = 1200
 TIME_LIMIT = 180
 
@@ -112,14 +113,21 @@ def init_state():
     ss.setdefault("client_id", str(uuid.uuid4()))
     ss.setdefault("nick", "")
     ss.setdefault("screen", "login")        # login | lobby | arena
-    ss.setdefault("phase", "idle")          # waiting | round | scoring | result | error
+    ss.setdefault("phase", "idle")          # waiting | round | scoring | round_result | raid_end | error
     ss.setdefault("room_code", "")
     ss.setdefault("is_host", False)
     ss.setdefault("conn", None)
     ss.setdefault("joined", False)
-    ss.setdefault("round", None)            # {task, model, time_limit}
+    ss.setdefault("round", None)            # {round, task, model, time_limit, difficulty, char_limit, status_effect, hint, boss_hp}
     ss.setdefault("round_start_ts", 0.0)
-    ss.setdefault("result", None)
+    ss.setdefault("raid", None)             # {boss_hp, boss_max_hp, max_rounds}
+    ss.setdefault("my_slot", "p1")
+    ss.setdefault("teammate_submitted", False)
+    ss.setdefault("submit_rejected", None)
+    ss.setdefault("round_result", None)     # 직전 라운드 ROUND_RESULT 페이로드
+    ss.setdefault("raid_end", None)         # RAID_END 페이로드
+    ss.setdefault("next_round_ready", False)
+    ss.setdefault("pending_end", False)
     ss.setdefault("error", None)
     ss.setdefault("record", {"win": 0, "lose": 0, "draw": 0})
 
@@ -179,7 +187,13 @@ def reset_to_lobby():
     ss.room_code = ""
     ss.is_host = False
     ss.round = None
-    ss.result = None
+    ss.raid = None
+    ss.round_result = None
+    ss.raid_end = None
+    ss.next_round_ready = False
+    ss.pending_end = False
+    ss.teammate_submitted = False
+    ss.submit_rejected = None
     ss.error = None
     ss.pop("editor", None)
     ss.pop("submitted_once", None)
@@ -395,6 +409,52 @@ div[data-testid="stTextInput"] input:focus, div[data-testid="stTextArea"] textar
 .pa-lbl{text-transform:uppercase;}
 .pa-quote{box-shadow:inset 2px 2px 0 rgba(0,0,0,.04);}
 .pa-avatar.foe{animation:pa-tw 2.2s ease-in-out infinite;}
+
+/* ============ 보스 레이드 전용 ============ */
+/* 보스 패널 */
+.pa-boss{border:var(--bd);border-radius:18px;background:linear-gradient(180deg,#2a2320,#171513);color:var(--paper);
+  box-shadow:var(--shadow);padding:16px 18px;margin-bottom:16px;position:relative;overflow:hidden;}
+.pa-boss .row{display:flex;align-items:center;gap:14px;}
+.pa-boss .sprite{font-size:46px;filter:drop-shadow(2px 2px 0 #000);animation:pa-float 2.4s ease-in-out infinite;}
+.pa-boss .meta{flex:1;}
+.pa-boss .name{font-family:'Black Han Sans';font-size:22px;letter-spacing:1px;color:var(--gold);}
+.pa-boss .rnd{font-family:'Space Mono';font-size:12px;color:#cdbfa6;letter-spacing:1px;}
+.pa-hpbar{height:22px;border:2.5px solid #000;border-radius:30px;background:#0c0a09;overflow:hidden;margin-top:10px;box-shadow:inset 2px 2px 0 rgba(0,0,0,.5);}
+.pa-hpfill{height:100%;width:100%;border-radius:30px;transition:width .6s cubic-bezier(.2,1,.3,1);
+  background:repeating-linear-gradient(45deg,rgba(255,255,255,.18) 0 8px,transparent 8px 16px),var(--mint);}
+.pa-hpfill.mid{background:repeating-linear-gradient(45deg,rgba(255,255,255,.18) 0 8px,transparent 8px 16px),var(--gold);}
+.pa-hpfill.low{background:repeating-linear-gradient(45deg,rgba(255,255,255,.18) 0 8px,transparent 8px 16px),var(--tomato);}
+.pa-hptext{display:flex;justify-content:space-between;font-family:'Space Mono';font-weight:700;font-size:12px;margin-top:6px;color:var(--paper);}
+
+/* 난이도 뱃지 */
+.pa-diff{display:inline-block;font-family:'Jua';font-size:12px;padding:4px 12px;border:2.5px solid var(--ink);border-radius:20px;
+  box-shadow:2px 2px 0 var(--ink);color:var(--ink);}
+.pa-diff.Low{background:var(--sky);color:#fff;} .pa-diff.Mid{background:var(--gold);} .pa-diff.High{background:var(--tomato);color:#fff;}
+
+/* 상태효과 배너 */
+.pa-status{border:2.5px solid var(--ink);border-radius:14px;padding:10px 14px;margin-top:10px;font-size:13.5px;line-height:1.5;
+  box-shadow:var(--shadow-sm);background:#fff;}
+.pa-status.buff{background:#dff7ee;} .pa-status.debuff{background:#ffe2db;}
+.pa-status.none{background:var(--paper-2);color:#7a7160;}
+.pa-status .hint{display:block;margin-top:6px;font-family:'Space Mono';font-size:12px;color:#5b5346;}
+
+/* 협동 플레이어 패널 */
+.pa-coop{border:var(--bd);border-radius:14px;background:#fff;box-shadow:var(--shadow-sm);padding:12px 14px;margin-bottom:10px;}
+.pa-coop.me{background:#eafaf4;} .pa-coop .who{font-family:'Jua';font-size:15px;}
+.pa-coop .st{font-family:'Space Mono';font-size:11px;color:#8a7e6b;}
+.pa-coop .badge{float:right;font-family:'Jua';font-size:12px;border:2px solid var(--ink);border-radius:16px;padding:1px 9px;}
+.pa-coop .badge.ok{background:var(--mint);} .pa-coop .badge.wait{background:var(--paper-2);}
+
+/* 데미지 팝 */
+@keyframes pa-dmg{0%{opacity:0;transform:translateY(8px) scale(.7)}30%{opacity:1;transform:translateY(-2px) scale(1.12)}100%{opacity:1;transform:none}}
+.pa-dmg{font-family:'Black Han Sans';font-size:34px;color:var(--tomato);-webkit-text-stroke:2px var(--ink);
+  display:inline-block;animation:pa-dmg .6s cubic-bezier(.2,1.6,.4,1) both;}
+
+/* 라운드 로그 (최종 리포트) */
+.pa-log{width:100%;border-collapse:separate;border-spacing:0 6px;font-family:'Space Mono';font-size:12.5px;}
+.pa-log td{background:#fff;border-top:2.5px solid var(--ink);border-bottom:2.5px solid var(--ink);padding:8px 10px;}
+.pa-log td:first-child{border-left:2.5px solid var(--ink);border-radius:10px 0 0 10px;}
+.pa-log td:last-child{border-right:2.5px solid var(--ink);border-radius:0 10px 10px 0;}
 </style>"""
 st.markdown(CSS, unsafe_allow_html=True)
 
@@ -453,8 +513,8 @@ def render_login():
     ss = st.session_state
     st.markdown(
         '''<div class="pa-hero">
-            <div class="pa-big">프롬프트<br><span class="red">한 판</span> <span class="vs">VS</span> 붙자</div>
-            <p class="pa-sub">같은 AI, 같은 문제. <b>토큰은 적게, 정답은 많이.</b><br>더 잘 짠 프롬프트가 이기는 실시간 1:1 대전.</p>
+            <div class="pa-big">프롬프트<br><span class="red">보스</span> <span class="vs">⚔</span> 레이드</div>
+            <p class="pa-sub">둘이 <b>협력</b>해 최대 6라운드, 프롬프트로 <b>보스를 처치</b>하라.<br>점수가 높을수록 큰 데미지 · 버프, 낮으면 디버프 · 난이도 하향.</p>
         </div>''',
         unsafe_allow_html=True,
     )
@@ -463,7 +523,7 @@ def render_login():
     with c:
         nick = st.text_input("닉네임", value=ss.nick, key="nick_input",
                              placeholder="닉네임", label_visibility="collapsed")
-        if st.button("⚔️  대전 시작하기", type="primary", key="login_go"):
+        if st.button("⚔️  레이드 시작하기", type="primary", key="login_go"):
             ss.nick = (nick or "").strip() or f"플레이어{ss.client_id[:4]}"
             fetch_record()
             ss.screen = "lobby"
@@ -496,14 +556,14 @@ def render_lobby():
 
     st.markdown(
         f'''<div class="pa-card"><div class="pa-tab"></div>
-            <span class="pa-tag">오늘의 컨디션 좋음</span>
-            <h2 style="font-family:'Black Han Sans';font-size:30px;line-height:1.15;margin:12px 0 6px">{ss.nick}님,<br>준비됐어요?</h2>
-            <p style="color:#5b5346;line-height:1.6;margin-bottom:6px">방을 새로 파서 코드를 공유하거나, 친구가 준 코드로 같은 방에 들어가면 대전이 시작돼요.
-            제한시간 3분 안에 최고의 프롬프트를 짜보세요.</p>
+            <span class="pa-tag">협동 보스 레이드</span>
+            <h2 style="font-family:'Black Han Sans';font-size:30px;line-height:1.15;margin:12px 0 6px">{ss.nick}님,<br>동료와 출격 준비!</h2>
+            <p style="color:#5b5346;line-height:1.6;margin-bottom:6px">방을 새로 파서 코드를 공유하거나, 동료가 준 코드로 같은 방에 들어가면 레이드가 시작돼요.
+            라운드마다 프롬프트로 보스를 공격! 두 사람의 개인 점수가 각각 데미지로 들어갑니다.</p>
             <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
-              <div class="pa-chip" style="min-width:84px"><div class="vl">{rec["win"]}</div><div class="lb">승</div></div>
-              <div class="pa-chip" style="min-width:84px"><div class="vl">{rec["lose"]}</div><div class="lb">패</div></div>
-              <div class="pa-chip" style="min-width:84px"><div class="vl">{rate}</div><div class="lb">승률</div></div>
+              <div class="pa-chip" style="min-width:84px"><div class="vl">{rec["win"]}</div><div class="lb">클리어</div></div>
+              <div class="pa-chip" style="min-width:84px"><div class="vl">{rec["lose"]}</div><div class="lb">실패</div></div>
+              <div class="pa-chip" style="min-width:84px"><div class="vl">{rate}</div><div class="lb">클리어율</div></div>
             </div>
         </div>''',
         unsafe_allow_html=True,
@@ -512,15 +572,15 @@ def render_lobby():
     col1, col2 = st.columns(2)
     with col1:
         st.markdown('<div class="pa-card" style="margin-bottom:8px"><div class="pa-tab tomato"></div><span class="pa-tag tomato">새 방</span>'
-                    '<h3 style="font-family:\'Jua\';font-size:19px;margin:10px 0 4px">새 대전방 만들기</h3>'
-                    '<p class="pa-hint" style="margin-bottom:10px">방을 만들면 4자리 코드가 나와요. 상대에게 코드를 알려주세요.</p></div>',
+                    '<h3 style="font-family:\'Jua\';font-size:19px;margin:10px 0 4px">새 레이드방 만들기</h3>'
+                    '<p class="pa-hint" style="margin-bottom:10px">방을 만들면 4자리 코드가 나와요. 동료에게 코드를 알려주세요.</p></div>',
                     unsafe_allow_html=True)
         if st.button("⚔️ 방 만들기", type="primary", key="create"):
             create_room()
     with col2:
         st.markdown('<div class="pa-card" style="margin-bottom:8px"><div class="pa-tab mint"></div><span class="pa-tag mint">방 코드로 입장</span>'
-                    '<h3 style="font-family:\'Jua\';font-size:19px;margin:10px 0 4px">친구랑 붙기</h3>'
-                    '<p class="pa-hint" style="margin-bottom:10px">상대가 만든 4자리 코드를 입력하면 매칭 확정!</p></div>',
+                    '<h3 style="font-family:\'Jua\';font-size:19px;margin:10px 0 4px">동료와 합류</h3>'
+                    '<p class="pa-hint" style="margin-bottom:10px">동료가 만든 4자리 코드를 입력하면 레이드 시작!</p></div>',
                     unsafe_allow_html=True)
         code = st.text_input("방 코드", max_chars=4, key="join_code",
                              placeholder="0000", label_visibility="collapsed")
@@ -604,7 +664,7 @@ def enter_arena():
 def ensure_conn():
     ss = st.session_state
     if ss.conn is None:
-        url = f"{ws_base()}/ws/arena/{ss.room_code}?client_id={ss.client_id}"
+        url = f"{ws_base()}/ws/raid/{ss.room_code}?client_id={ss.client_id}"
         conn = WSConn(url)
         try:
             conn.start()
@@ -618,36 +678,98 @@ def ensure_conn():
         ss.joined = True
 
 
+def _enter_round(msg: dict):
+    """ROUND_START 페이로드로 라운드 입력 화면을 시작한다."""
+    ss = st.session_state
+    ss.round = {
+        "round": msg.get("round", 1),
+        "max_rounds": msg.get("max_rounds", 6),
+        "task": msg.get("task", ""),
+        "model": msg.get("model", ""),
+        "time_limit": msg.get("time_limit", TIME_LIMIT),
+        "difficulty": msg.get("difficulty", "Mid"),
+        "char_limit": int(msg.get("char_limit", MAX_LEN)),
+        "status_effect": msg.get("status_effect", "—"),
+        "hint": msg.get("hint", ""),
+        "boss_hp": msg.get("boss_hp", 100.0),
+        "boss_max_hp": msg.get("boss_max_hp", 100.0),
+    }
+    ss.my_slot = msg.get("your_slot", ss.my_slot)
+    ss.round_start_ts = time.time()
+    ss.teammate_submitted = False
+    ss.submit_rejected = None
+    ss.next_round_ready = False
+    ss.pop("editor", None)
+    ss.submitted_once = False
+    ss.phase = "round"
+
+
 def drain_events():
     ss = st.session_state
     if not ss.conn:
         return
     for msg in ss.conn.drain():
         ev = msg.get("event")
-        if ev == "WAITING":
-            if ss.phase not in ("round", "scoring", "result"):
+        if ev == "RAID_START":
+            ss.raid = {
+                "boss_hp": msg.get("boss_hp", 100.0),
+                "boss_max_hp": msg.get("boss_max_hp", 100.0),
+                "max_rounds": msg.get("max_rounds", 6),
+            }
+        elif ev == "WAITING":
+            if ss.phase not in ("round", "scoring", "round_result", "raid_end"):
                 ss.phase = "waiting"
         elif ev == "ROUND_START":
-            ss.round = {"task": msg.get("task", ""), "model": msg.get("model", ""),
-                        "time_limit": msg.get("time_limit", TIME_LIMIT)}
-            ss.round_start_ts = time.time()
-            ss.phase = "round"
-        elif ev == "RESULT":
-            ss.result = msg
-            ss.phase = "result"
-            _tally(msg.get("result"))
-        elif ev == "TIMEOUT":
-            ss.result = msg
-            ss.phase = "result"
-            _tally("LOSE")
+            # 직전 라운드 결과를 보고 있으면 다음 라운드를 버퍼링(자동 전환 방지).
+            if ss.phase == "round_result":
+                ss.round = {
+                    "round": msg.get("round", 1), "max_rounds": msg.get("max_rounds", 6),
+                    "task": msg.get("task", ""), "model": msg.get("model", ""),
+                    "time_limit": msg.get("time_limit", TIME_LIMIT),
+                    "difficulty": msg.get("difficulty", "Mid"),
+                    "char_limit": int(msg.get("char_limit", MAX_LEN)),
+                    "status_effect": msg.get("status_effect", "—"),
+                    "hint": msg.get("hint", ""),
+                    "boss_hp": msg.get("boss_hp", 100.0),
+                    "boss_max_hp": msg.get("boss_max_hp", 100.0),
+                }
+                ss.my_slot = msg.get("your_slot", ss.my_slot)
+                ss.next_round_ready = True
+            else:
+                _enter_round(msg)
+        elif ev == "TEAMMATE_SUBMITTED":
+            ss.teammate_submitted = True
+        elif ev == "SUBMIT_REJECTED":
+            # 제출 거부 → 다시 입력 가능하도록 라운드로 복귀
+            ss.submit_rejected = msg.get("message", "제출이 거부되었습니다.")
+            ss.submitted_once = False
+            if ss.phase == "scoring":
+                ss.phase = "round"
+        elif ev == "ROUND_TIMEOUT":
+            ss.submit_rejected = msg.get("message", "시간 초과로 이번 라운드 기여가 0 처리됩니다.")
+        elif ev == "ROUND_RESULT":
+            ss.round_result = msg
+            if ss.raid:
+                ss.raid["boss_hp"] = msg.get("boss_hp", ss.raid["boss_hp"])
+            ss.next_round_ready = False
+            ss.pending_end = False
+            ss.phase = "round_result"
+        elif ev == "RAID_END":
+            ss.raid_end = msg
+            _tally("WIN" if msg.get("victory") else "LOSE")
+            if ss.phase == "round_result":
+                # 최종 라운드 결과를 먼저 보여주고, 버튼으로 리포트 전환
+                ss.next_round_ready = True
+                ss.pending_end = True
+            else:
+                ss.phase = "raid_end"
         elif ev == "ERROR":
             ss.error = msg
             ss.phase = "error"
         elif ev == "_CLOSED":
-            # 결과를 이미 받았으면 무시, 아니면 연결 종료 안내
-            if ss.phase not in ("result", "error"):
+            if ss.phase not in ("round_result", "raid_end", "error"):
                 ss.error = {"event": "ERROR", "code": "SERVER_ERROR",
-                            "message": "대전 서버와의 연결이 끊어졌어요.", "action_required": "GO_TO_HOME"}
+                            "message": "레이드 서버와의 연결이 끊어졌어요.", "action_required": "GO_TO_HOME"}
                 ss.phase = "error"
 
 
@@ -670,29 +792,51 @@ def render_arena():
         render_round()
     elif phase == "scoring":
         render_scoring()
-    elif phase == "result":
-        render_result()
+    elif phase == "round_result":
+        render_round_result()
+    elif phase == "raid_end":
+        render_raid_end()
     elif phase == "error":
         render_error()
 
 
+def _boss_panel_html(boss_hp: float, boss_max: float, rnd: int, max_rounds: int,
+                     difficulty: str) -> str:
+    boss_max = boss_max or 100.0
+    pct = max(0.0, min(100.0, boss_hp / boss_max * 100))
+    cls = "" if pct > 50 else ("mid" if pct > 25 else "low")
+    return _pa_html(
+        f'''<div class="pa-boss">
+          <div class="row">
+            <div class="sprite">👹</div>
+            <div class="meta">
+              <div class="name">프롬프트 보스</div>
+              <div class="rnd">ROUND {rnd} / {max_rounds} &nbsp;·&nbsp; 난이도
+                <span class="pa-diff {difficulty}">{difficulty}</span></div>
+            </div>
+          </div>
+          <div class="pa-hpbar"><div class="pa-hpfill {cls}" style="width:{pct:.1f}%"></div></div>
+          <div class="pa-hptext"><span>BOSS HP</span><span>{boss_hp:.1f} / {boss_max:.0f}</span></div>
+        </div>'''
+    )
+
+
 def render_waiting():
     ss = st.session_state
-    foe_av = "❓"
-    code_html = (f'<p class="pa-hint">아래 코드를 상대에게 공유하세요</p>'
+    code_html = (f'<p class="pa-hint">아래 코드를 동료에게 공유하세요</p>'
                  f'<div class="pa-roomcode">{ss.room_code}</div>') if ss.is_host else \
                 (f'<p class="pa-hint">방 코드</p><div class="pa-roomcode">{ss.room_code}</div>')
     st.markdown(
         _pa_html(
             f'''<div class="pa-card pa-center"><div class="pa-tab sky"></div>
-            <span class="pa-tag sky">매칭 대기</span>
+            <span class="pa-tag sky">동료 대기 중</span>
             <div style="margin:16px 0 10px">{code_html}</div>
             <div style="margin:18px 0 6px">
               <div class="pa-fighter"><div class="pa-avatar me">😎</div><div style="font-family:Jua;font-size:14px">{ss.nick}</div></div>
-              <span class="pa-burst tomato"><span class="pa-vsbubble">VS</span></span>
-              <div class="pa-fighter"><div class="pa-avatar foe">{foe_av}</div><div style="font-family:Jua;font-size:14px">상대 찾는 중…</div></div>
+              <span class="pa-burst"><span class="pa-vsbubble" style="color:var(--mint-dark)">＋</span></span>
+              <div class="pa-fighter"><div class="pa-avatar foe">🧑‍🚀</div><div style="font-family:Jua;font-size:14px">동료 합류 대기…</div></div>
             </div>
-            <p class="pa-hint">같은 코드를 입력한 상대가 들어오면 자동으로 라운드가 시작돼요.</p>
+            <p class="pa-hint">같은 코드를 입력한 동료가 들어오면 자동으로 레이드가 시작돼요.</p>
         </div>'''
         ),
         unsafe_allow_html=True,
@@ -707,15 +851,35 @@ def render_round():
     rd = ss.round or {}
     task = rd.get("task", "")
     model = rd.get("model", "")
+    difficulty = rd.get("difficulty", "Mid")
+    char_limit = int(rd.get("char_limit", MAX_LEN))
+    status = rd.get("status_effect", "—")
+    hint = rd.get("hint", "")
     limit = int(rd.get("time_limit", TIME_LIMIT))
     elapsed = time.time() - ss.round_start_ts
     remaining = max(0, int(limit - elapsed))
+
+    # 보스 패널
+    st.markdown(
+        _boss_panel_html(
+            float(rd.get("boss_hp", 100.0)), float(rd.get("boss_max_hp", 100.0)),
+            int(rd.get("round", 1)), int(rd.get("max_rounds", 6)), difficulty,
+        ),
+        unsafe_allow_html=True,
+    )
+
+    # 상태효과 / 힌트 (내 슬롯 기준)
+    if status and status != "—":
+        scls = "buff" if status.startswith("🟢") else "debuff"
+        hint_html = f'<span class="hint">💡 {_esc(hint)}</span>' if hint else ""
+        st.markdown(f'<div class="pa-status {scls}">{_esc(status)}{hint_html}</div>',
+                    unsafe_allow_html=True)
 
     st.markdown(
         f'''<div class="pa-card">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
               <span class="pa-tag tomato">라운드 진행 중</span>
-              <span class="pa-hint">모델 <b style="font-family:Jua">{model or "—"}</b> · 최대 {MAX_LEN}자</span>
+              <span class="pa-hint">모델 <b style="font-family:Jua">{model or "—"}</b> · 최대 {char_limit}자</span>
             </div>
             <div class="pa-task"><h4>📌 이번 과제</h4><p>{task or "과제를 불러오는 중…"}</p></div>
         </div>''',
@@ -723,7 +887,13 @@ def render_round():
     )
 
     # 부드러운 JS 카운트다운 + 라이브 글자수 (파이썬 rerun 없이 동작 → 입력 방해 없음)
-    _render_timer_and_counter(remaining)
+    _render_timer_and_counter(remaining, char_limit)
+
+    if ss.teammate_submitted:
+        st.markdown('<p class="pa-hint" style="text-align:center;color:var(--mint-dark)">✅ 동료가 먼저 제출했어요! 함께 보스를 노려봐요.</p>',
+                    unsafe_allow_html=True)
+    if ss.submit_rejected:
+        st.warning(ss.submit_rejected)
 
     ss.setdefault("editor", "")
     text = st.text_area("프롬프트", key="editor", height=220,
@@ -731,28 +901,28 @@ def render_round():
                         label_visibility="collapsed")
 
     n = len(text or "")
-    over = n > MAX_LEN
+    over = n > char_limit
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.markdown(f'<p class="pa-hint" style="margin-top:6px">⚡ 시간 안에 제출하지 않으면 자동 패배! 짧고 정확할수록 길이 점수가 올라가요.</p>',
+        st.markdown('<p class="pa-hint" style="margin-top:6px">⚡ 점수가 높을수록 큰 데미지! 짧고 정확할수록 길이 점수가 올라가요.</p>',
                     unsafe_allow_html=True)
     with c2:
         color = "var(--tomato)" if over else "var(--ink)"
-        st.markdown(f'<p style="text-align:right;font-family:Space Mono;font-weight:700;margin-top:6px;color:{color}">{n} / {MAX_LEN}자</p>',
+        st.markdown(f'<p style="text-align:right;font-family:Space Mono;font-weight:700;margin-top:6px;color:{color}">{n} / {char_limit}자</p>',
                     unsafe_allow_html=True)
 
     if over:
-        st.warning(f"1,200자를 넘었어요. 줄여야 제출할 수 있어요. (현재 {n}자)")
+        st.warning(f"{char_limit}자를 넘었어요. 줄여야 제출할 수 있어요. (현재 {n}자)")
 
-    if st.button("🚀 제출하기", type="primary", key="submit_prompt", disabled=over):
+    if st.button("🚀 공격! (제출)", type="primary", key="submit_prompt", disabled=over):
         submit_prompt(text or "")
 
-    # 안전망: 시간이 다 됐는데도 화면이 남아있으면 채점 대기로 넘기고 서버 TIMEOUT 수신
+    # 안전망: 시간이 다 됐는데도 화면이 남아있으면 현재 입력으로 제출 처리
     if remaining <= 0 and not ss.get("submitted_once"):
         submit_prompt(text or "", timed_out=True)
 
 
-def _render_timer_and_counter(remaining: int):
+def _render_timer_and_counter(remaining: int, char_limit: int = MAX_LEN):
     """JS로 매끄러운 카운트다운 + 입력창 글자수 실시간 표시 (rerun 불필요)."""
     html = """
     <div style="display:flex;justify-content:center;margin:2px 0 14px">
@@ -766,7 +936,7 @@ def _render_timer_and_counter(remaining: int):
     </div>
     <script>
       (function(){
-        var remain = __REMAIN__, MAX = 1200;
+        var remain = __REMAIN__, MAX = __LIMIT__;
         var clock = document.getElementById('pa-clock');
         var bar = document.getElementById('pa-bar');
         var doc = window.parent.document;
@@ -789,7 +959,7 @@ def _render_timer_and_counter(remaining: int):
         setInterval(updCount,400); updCount();
       })();
     </script>
-    """.replace("__REMAIN__", str(int(remaining)))
+    """.replace("__REMAIN__", str(int(remaining))).replace("__LIMIT__", str(int(char_limit)))
     st.components.v1.html(html, height=98)
 
 
@@ -797,10 +967,12 @@ def submit_prompt(text: str, timed_out: bool = False):
     ss = st.session_state
     if ss.get("submitted_once"):
         return
-    if not timed_out and len(text) > MAX_LEN:
-        st.warning("1,200자를 넘으면 제출할 수 없어요.")
+    char_limit = int((ss.round or {}).get("char_limit", MAX_LEN))
+    if not timed_out and len(text) > char_limit:
+        st.warning(f"{char_limit}자를 넘으면 제출할 수 없어요.")
         return
     ss.submitted_once = True
+    ss.submit_rejected = None
     if ss.conn:
         ss.conn.send({"action": "SUBMIT", "prompt_text": text})
     ss.phase = "scoring"
@@ -808,13 +980,16 @@ def submit_prompt(text: str, timed_out: bool = False):
 
 
 def render_scoring():
+    ss = st.session_state
+    mate = "✅ 동료도 제출 완료! 보스를 채점 중…" if ss.teammate_submitted \
+        else "🕓 동료의 제출을 기다리는 중…"
     st.markdown(
         _pa_html(
-            '''<div class="pa-card pa-center">
-            <div class="pa-load"><div class="coin">P</div><div class="coin">VS</div><div class="coin">P</div></div>
-            <h3 style="font-family:'Black Han Sans';font-size:24px;margin:0">채점 중…</h3>
-            <p class="pa-hint" style="margin-top:6px">두 프롬프트를 같은 모델에 넣고 N개 테스트를 병렬로 돌리는 중이에요.</p>
-            <p class="pa-hint">상대가 아직 제출하지 않았다면 조금 더 기다려요.</p>
+            f'''<div class="pa-card pa-center">
+            <div class="pa-load"><div class="coin">P</div><div class="coin">＋</div><div class="coin">P</div></div>
+            <h3 style="font-family:'Black Han Sans';font-size:24px;margin:0">공격 판정 중…</h3>
+            <p class="pa-hint" style="margin-top:6px">두 프롬프트를 같은 모델에 넣고 테스트를 병렬로 돌려 데미지를 계산해요.</p>
+            <p class="pa-hint">{mate}</p>
         </div>'''
         ),
         unsafe_allow_html=True,
@@ -830,74 +1005,151 @@ def _case_grid(cases: list) -> str:
     return '<div class="pa-cases">' + "".join(cells) + "</div>"
 
 
-def _panel(side_cls: str, who: str, data: dict) -> str:
-    if not data:
-        return ""
-    correct = data.get("correct_count", 0)
-    total = data.get("total_count", 0)
-    prompt = (data.get("prompt") or "").strip() or "(제출한 프롬프트 없음)"
-    resp = (data.get("ai_response") or "").strip()
-    resp_html = ""
-    if resp and not resp.startswith("__WRONG__"):
-        resp_html = (f'<p class="pa-lbl" style="margin-top:10px">모델 대표 출력</p>'
-                     f'<div class="pa-quote" style="max-height:80px">{resp}</div>')
-    cases = data.get("test_case_results", [])
-    return (
-        f'<div class="pa-panel {side_cls}">'
-        f'<div class="pa-ph"><span>{who}</span><span class="pa-acc">{correct} / {total}</span></div>'
-        f'<div class="pa-pbody">'
-        f'<p class="pa-lbl">제출한 프롬프트</p><div class="pa-quote">{_esc(prompt)}</div>'
-        f'{resp_html}'
-        f'<p class="pa-lbl" style="margin-top:10px">문제별 정오 ({total}문항)</p>{_case_grid(cases)}'
-        f'</div></div>'
-    )
-
-
 def _esc(s: str) -> str:
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
-def _score_parts(data: dict):
+def _raid_player_card(who: str, data: dict, is_me: bool) -> str:
+    """라운드 결과의 한 플레이어 카드 (개인 점수·데미지·정오·총평)."""
+    side = "me" if is_me else "foe"
+    score = float(data.get("score", 0.0))
+    damage = float(data.get("damage", 0.0))
     correct = data.get("correct_count", 0)
-    total = data.get("total_count", 0) or 1
-    L = data.get("prompt_length", 0)
-    acc = correct / total
-    ratio = min(L / MAX_LEN, 1.0)
-    length_bonus = math.sqrt(max(0.0, 1.0 - ratio ** 2))
-    return 0.9 * acc, 0.1 * length_bonus
+    total = data.get("total_count", 0)
+    timed_out = data.get("timed_out")
+    prompt = (data.get("prompt") or "").strip() or "(제출 없음)"
+    resp = (data.get("ai_response") or "").strip()
+    resp_html = ""
+    if resp and not resp.startswith("__WRONG__"):
+        resp_html = (f'<p class="pa-lbl" style="margin-top:10px">모델 대표 출력</p>'
+                     f'<div class="pa-quote" style="max-height:70px">{_esc(resp)}</div>')
+    cases = data.get("test_case_results", [])
+    grid = _case_grid(cases) if cases else '<p class="pa-hint">채점 없음</p>'
+    timeout_badge = ' <span class="pa-flag">시간 초과</span>' if timed_out else ""
+    return (
+        f'<div class="pa-panel {side}">'
+        f'<div class="pa-ph"><span>{who}{timeout_badge}</span>'
+        f'<span class="pa-acc">⚔️ {damage:.1f} DMG</span></div>'
+        f'<div class="pa-pbody">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        f'<span class="pa-lbl" style="margin:0">개인 점수</span>'
+        f'<b style="font-family:Black Han Sans;font-size:22px">{score:.2f}<small style="font-size:12px;color:#8a7e6b"> / 1.00</small></b></div>'
+        f'<p class="pa-lbl">제출한 프롬프트</p><div class="pa-quote">{_esc(prompt)}</div>'
+        f'{resp_html}'
+        f'<p class="pa-lbl" style="margin-top:10px">문제별 정오 ({correct}/{total})</p>{grid}'
+        f'</div></div>'
+    )
 
 
-def render_result():
+def render_round_result():
     ss = st.session_state
-    res = ss.result or {}
+    rr = ss.round_result or {}
+    my_slot = ss.my_slot
+    mate_slot = "p2" if my_slot == "p1" else "p1"
+    me = rr.get(my_slot) or {}
+    mate = rr.get(mate_slot) or {}
 
-    # 타임아웃 단독 이벤트
-    if res.get("event") == "TIMEOUT":
+    # 보스 패널 (데미지 반영 후)
+    st.markdown(
+        _boss_panel_html(
+            float(rr.get("boss_hp", 0.0)), float(rr.get("boss_max_hp", 100.0)),
+            int(rr.get("round", 1)),
+            int((ss.raid or {}).get("max_rounds", 6)),
+            rr.get("next_difficulty", "Mid"),
+        ),
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        _pa_html(
+            f'''<div class="pa-center">
+            <span class="pa-tag tomato">라운드 {rr.get("round","?")} 결과</span>
+            <div style="margin:8px 0"><span class="pa-dmg">- {rr.get("damage_dealt",0)} HP</span></div>
+            <p style="font-family:Jua;font-size:15px;color:#5b5346;margin-bottom:6px">{_esc(rr.get("system_message",""))}</p>
+        </div>'''
+        ),
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(_raid_player_card(f"😎 {ss.nick} (나)", me, True), unsafe_allow_html=True)
+    st.markdown(_raid_player_card("🧑‍🚀 동료", mate, False), unsafe_allow_html=True)
+
+    # 내 다음 라운드 상태효과 안내
+    nxt = me.get("next_status_effect", "—")
+    if nxt and nxt != "—":
+        scls = "buff" if nxt.startswith("🟢") else "debuff"
+        st.markdown(f'<div class="pa-status {scls}">다음 라운드 — {_esc(nxt)}</div>',
+                    unsafe_allow_html=True)
+
+    # 디렉터(LLM/휴리스틱) 판단 근거 — 점수·제출시간·프롬프트를 보고 결정
+    rationale = (rr.get("director_rationale") or "").strip()
+    if rationale:
         st.markdown(
-            f'''<div class="pa-card pa-center">
-                <span class="pa-tag tomato">라운드 결과</span>
-                <div><span class="pa-banner lose">시간 초과 패!</span></div>
-                <p style="font-family:Jua;color:#5b5346">{res.get("message","제한 시간을 넘겨 자동 패배 처리됐어요.")}</p>
-            </div>''',
+            f'<p class="pa-hint" style="text-align:center;margin-top:6px">'
+            f'🎬 디렉터 판단 — {_esc(rationale)}</p>',
             unsafe_allow_html=True,
         )
-        _result_buttons()
-        return
 
-    result = res.get("result", "DRAW")
-    my = res.get("my_data") or {}
-    opp = res.get("opponent_data") or {}
-    by_forfeit = res.get("by_forfeit")
+    # 내 프롬프트 AI 총평 (있을 때만)
+    evaluation = (me.get("prompt_evaluation") or "").strip()
+    if evaluation and not evaluation.startswith("__WRONG__"):
+        st.markdown(
+            f'''<div class="pa-feedback" style="margin-top:12px"><h4 style="font-family:Jua;font-size:16px;margin:0 0 10px">🧐 AI 총평</h4>
+                <div class="pa-fb"><span class="pa-pin good">AI</span><span>{_esc(evaluation)}</span></div></div>''',
+            unsafe_allow_html=True,
+        )
 
-    banner = {"WIN": ("win", "YOU WIN!"), "LOSE": ("lose", "YOU LOSE"), "DRAW": ("draw", "무승부")}.get(result, ("draw", "무승부"))
-    sub = {"WIN": "토큰은 아꼈고 정답은 챙겼어요. 깔끔한 한 판!",
-           "LOSE": "다음 판은 더 짧고 또렷하게 가봐요.",
-           "DRAW": "막상막하! 점수가 똑같이 나왔어요."}.get(result, "")
-    if by_forfeit:
-        sub = res.get("message", "상대가 나가서 부전승으로 이겼어요.")
+    # 다음 라운드 / 최종 결과로 진행
+    if ss.next_round_ready:
+        label = "🏁 최종 결과 보기" if ss.pending_end else "다음 라운드로 ▶"
+        c = st.columns([1, 2, 1])[1]
+        with c:
+            if st.button(label, type="primary", key="advance"):
+                if ss.pending_end:
+                    ss.phase = "raid_end"
+                else:
+                    ss.round_start_ts = time.time()
+                    ss.submitted_once = False
+                    ss.teammate_submitted = False
+                    ss.submit_rejected = None
+                    ss.next_round_ready = False
+                    ss.pop("editor", None)
+                    ss.phase = "round"
+                st.rerun()
+    else:
+        st.markdown('<p class="pa-hint" style="text-align:center">다음 라운드를 준비하는 중…</p>',
+                    unsafe_allow_html=True)
+        live_refresh(800, "rf_rr")
+
+
+def _round_log_table(log: list) -> str:
+    rows = []
+    for r in log:
+        rows.append(
+            f'<tr><td>R{r.get("round","?")}</td>'
+            f'<td><span class="pa-diff {r.get("difficulty","Mid")}">{r.get("difficulty","Mid")}</span></td>'
+            f'<td>팀점수 {r.get("round_score",0)}</td>'
+            f'<td>-{r.get("damage_dealt",0)} HP</td>'
+            f'<td>P1 {r.get("p1_score",0)} · P2 {r.get("p2_score",0)}</td></tr>'
+        )
+    return '<table class="pa-log">' + "".join(rows) + "</table>"
+
+
+def render_raid_end():
+    ss = st.session_state
+    end = ss.raid_end or {}
+    victory = bool(end.get("victory"))
+    boss_hp = float(end.get("boss_hp", 0.0))
+    boss_max = float(end.get("boss_max_hp", 100.0))
+    team_score = float(end.get("team_score", 0.0))
+    rounds_played = end.get("rounds_played", 0)
+    log = end.get("round_log", [])
+
+    banner = ("win", "보스 처치!") if victory else ("lose", "레이드 실패")
+    sub = end.get("message", "")
 
     confetti = ""
-    if result == "WIN":
+    if victory:
         cols = ["var(--tomato)", "var(--gold)", "var(--mint)", "var(--sky)", "var(--gold)", "var(--tomato)", "var(--mint)"]
         bits = "".join(
             f'<i style="left:{8+i*13}%;background:{c};animation-delay:{(i%4)*0.18:.2f}s"></i>'
@@ -908,78 +1160,36 @@ def render_result():
     st.markdown(
         _pa_html(
             f'''<div class="pa-center">{confetti}
-            <span class="pa-tag tomato">라운드 결과</span>
+            <span class="pa-tag tomato">레이드 종료</span>
             <div><span class="pa-burst"><span class="pa-banner {banner[0]}">{banner[1]}</span></span></div>
-            <p style="font-family:Jua;font-size:17px;color:#5b5346;margin-bottom:14px">{sub}</p>
+            <p style="font-family:Jua;font-size:17px;color:#5b5346;margin-bottom:12px">{_esc(sub)}</p>
         </div>'''
         ),
         unsafe_allow_html=True,
     )
 
-    # 점수판
-    my_acc, my_len = _score_parts(my)
-    op_acc, op_len = _score_parts(opp)
-    my_total = my.get("score", round(my_acc + my_len, 4))
-    op_total = opp.get("score", round(op_acc + op_len, 4))
-    my_win = "win" if result == "WIN" else ""
-    op_win = "win" if result == "LOSE" else ""
-
-    sb1, mid, sb2 = st.columns([5, 1, 5])
-    with sb1:
-        st.markdown(
-            f'''<div class="pa-sbcard {my_win}">
-                <div style="font-family:Jua;font-size:16px;margin-bottom:8px">😎 {ss.nick}</div>
-                <div class="pa-total">{my_total:.2f}<small> / 1.00</small></div>
-                <div class="pa-formula">
-                  <div class="r"><span>정답 정확도 ×0.9</span><b>{my_acc:.2f}</b></div>
-                  <div class="r"><span>길이 보정 ×0.1</span><b>{my_len:.2f}</b></div>
-                </div></div>''',
-            unsafe_allow_html=True,
-        )
-    with mid:
-        st.markdown('<div class="pa-center" style="padding-top:22px"><span class="pa-burst tomato"><span class="pa-vsbubble">VS</span></span></div>', unsafe_allow_html=True)
-    with sb2:
-        st.markdown(
-            f'''<div class="pa-sbcard {op_win}">
-                <div style="font-family:Jua;font-size:16px;margin-bottom:8px">🤖 라이벌</div>
-                <div class="pa-total">{op_total:.2f}<small> / 1.00</small></div>
-                <div class="pa-formula">
-                  <div class="r"><span>정답 정확도 ×0.9</span><b>{op_acc:.2f}</b></div>
-                  <div class="r"><span>길이 보정 ×0.1</span><b>{op_len:.2f}</b></div>
-                </div></div>''',
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        _boss_panel_html(boss_hp, boss_max, rounds_played,
+                         int((ss.raid or {}).get("max_rounds", 6)),
+                         (log[-1].get("difficulty", "Mid") if log else "Mid")),
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
-        f'<p class="pa-hint" style="text-align:center;margin:14px 0 4px">채점식 &nbsp;Score = 0.9 × (정답 수 / N) + 0.1 × √(1 − (L/1200)²)</p>',
-        unsafe_allow_html=True)
+        f'''<div class="pa-card pa-center">
+            <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap">
+              <div class="pa-chip"><div class="vl">{rounds_played}</div><div class="lb">진행 라운드</div></div>
+              <div class="pa-chip"><div class="vl">{team_score:.2f}</div><div class="lb">팀 누적 점수</div></div>
+              <div class="pa-chip"><div class="vl">{boss_hp:.0f}</div><div class="lb">남은 보스 HP</div></div>
+            </div>
+        </div>''',
+        unsafe_allow_html=True,
+    )
 
-    # 결과물 비교
-    st.markdown('<div class="pa-center"><span class="pa-h">결과물 비교</span></div>',
-                unsafe_allow_html=True)
-    st.markdown(_panel("me", f"😎 {ss.nick}", my), unsafe_allow_html=True)
-    st.markdown(_panel("foe", "🤖 라이벌", opp), unsafe_allow_html=True)
-
-    # 피드백 (진짜 LLM 총평이 있을 때만; mock 모드의 더미는 숨김)
-    evaluation = (my.get("prompt_evaluation") or "").strip()
-    if evaluation and not evaluation.startswith("__WRONG__"):
-        st.markdown(
-            f'''<div class="pa-feedback"><h4 style="font-family:Jua;font-size:16px;margin:0 0 10px">🧐 AI 총평</h4>
-                <div class="pa-fb"><span class="pa-pin good">AI</span><span>{_esc(evaluation)}</span></div></div>''',
-            unsafe_allow_html=True,
-        )
-    else:
-        tip_good = "출력 형식을 한 단어로 강제하면 정답률이 잘 올라가요."
-        tip_bad = "불필요한 수식어는 토큰만 잡아먹어요. 규칙만 또렷하게 남기면 길이 보정 점수가 올라가요."
-        if my.get("prompt_length", 0) > 500:
-            tip_bad = "프롬프트가 길었어요. 핵심 규칙만 남기면 길이 보정 점수가 확 올라가요."
-        st.markdown(
-            f'''<div class="pa-feedback"><h4 style="font-family:Jua;font-size:16px;margin:0 0 10px">🧐 한 줄 피드백
-                <span class="pa-flag">실서버(Upstage) 연결 시 AI 총평 표시</span></h4>
-                <div class="pa-fb"><span class="pa-pin good">👍</span><span>{tip_good}</span></div>
-                <div class="pa-fb"><span class="pa-pin bad">💡</span><span>{tip_bad}</span></div></div>''',
-            unsafe_allow_html=True,
-        )
+    if log:
+        st.markdown('<div class="pa-center"><span class="pa-h">라운드 기록</span></div>',
+                    unsafe_allow_html=True)
+        st.markdown(_round_log_table(log), unsafe_allow_html=True)
 
     _result_buttons()
 

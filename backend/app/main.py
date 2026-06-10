@@ -6,7 +6,8 @@ Base URL: http://localhost:8000
   - app.session  : 세션 확인 (/api/me)
   - app.auth     : 로그인/세션 토큰 (/api/auth/*)
   - app.rooms    : 방 생성/조회 (/api/rooms)
-  - app.arena    : WebSocket 대전 (/ws/arena/{room_code}) + GET /api/tasks
+  - app.raid     : 협동 보스 레이드 WebSocket (/ws/raid/{room_code})
+  - app.arena    : GET /api/tasks (과제 메타데이터)
   - app.history  : 결과 기록 (/api/me/history)
   - app.health   : 상태 점검 (/healthz)
 """
@@ -19,10 +20,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.arena.game import GameServer
-from app.arena.router import router as arena_router
 from app.arena.task_repository import TaskRepository
 from app.arena.tasks_router import router as tasks_router
+from app.raid.router import router as raid_router
+from app.raid.server import RaidServer
 from app.auth.providers import DevProvider, NicknameProvider
 from app.auth.router import router as auth_router
 from app.auth.service import AuthService
@@ -84,8 +85,8 @@ def create_app() -> FastAPI:
     # 결과 기록
     app.state.history_store = InMemoryHistoryStore()
 
-    # 대전 엔진
-    app.state.server = GameServer(
+    # 보스 레이드 엔진 (LangGraph 디렉터)
+    app.state.server = RaidServer(
         settings,
         history=app.state.history_store,
         task_repo=app.state.task_repo,
@@ -94,7 +95,7 @@ def create_app() -> FastAPI:
     app.include_router(session_router)
     app.include_router(auth_router)
     app.include_router(rooms_router)
-    app.include_router(arena_router)
+    app.include_router(raid_router)
     app.include_router(tasks_router)
     app.include_router(history_router)
     app.include_router(health_router)

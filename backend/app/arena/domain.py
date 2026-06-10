@@ -28,6 +28,7 @@ class Task:
     description: str  # ROUND_START 의 task 필드
     model: str        # 사용할 Base AI 모델명
     test_cases: tuple[TestCase, ...]
+    difficulty: str = "Mid"  # 보스 레이드 난이도 티어: "Low" | "Mid" | "High"
 
     @property
     def total_count(self) -> int:

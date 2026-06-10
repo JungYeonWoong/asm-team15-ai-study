@@ -56,6 +56,8 @@ class Problem(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     problem_type: Mapped[str] = mapped_column(String(50), nullable=False, default="classification")
+    # 보스 레이드 난이도 티어: "Low" | "Mid" | "High"
+    difficulty: Mapped[str] = mapped_column(String(10), nullable=False, default="Mid")
 
     test_cases: Mapped[list[ProblemTestCase]] = relationship(
         "ProblemTestCase", back_populates="problem", cascade="all, delete-orphan"

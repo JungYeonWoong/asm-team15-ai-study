@@ -72,8 +72,11 @@ def test_history_endpoint_empty_for_new_user(client):
     assert resp.json() == []
 
 
-def test_history_records_after_round(client, server):
-    """대전 1회 진행 후 양 플레이어의 history 가 적재되어야 한다."""
+def test_history_records_after_raid(client, server):
+    """레이드 종료(RAID_END) 후 양 플레이어의 history 가 적재되어야 한다."""
+    # 보스 HP 를 낮춰 1라운드 만에 종료되도록 한다.
+    server.boss_hp_override = 5.0
+
     host = "h-" + "0" * 30
     guest = "g-" + "0" * 30
     code = client.post("/api/rooms", headers={"X-Client-ID": host}).json()[
@@ -81,26 +84,30 @@ def test_history_records_after_round(client, server):
     ]
 
     def ws_url(cid):
-        return f"/ws/arena/{code}?client_id={cid}"
+        return f"/ws/raid/{code}?client_id={cid}"
+
+    def drain_until(ws, event):
+        while True:
+            msg = ws.receive_json()
+            if msg.get("event") == event:
+                return msg
 
     with client.websocket_connect(ws_url(host)) as wsa:
         wsa.send_json({"action": "JOIN"})
         wsa.receive_json()  # WAITING
         with client.websocket_connect(ws_url(guest)) as wsb:
             wsb.send_json({"action": "JOIN"})
-            # ROUND_START 양쪽 수신
-            wsa.receive_json()
-            wsb.receive_json()
+            drain_until(wsa, "ROUND_START")
+            drain_until(wsb, "ROUND_START")
 
-            wsa.send_json({"action": "SUBMIT", "prompt_text": "abcabc"})
-            # WAITING for opponent
-            wsa.receive_json()
-            wsb.send_json({"action": "SUBMIT", "prompt_text": "xyzxyz"})
-            # RESULT 양쪽 수신
-            wsa.receive_json()
-            wsb.receive_json()
+            wsa.send_json({"action": "SUBMIT", "prompt_text": "do it"})
+            wsb.send_json({"action": "SUBMIT", "prompt_text": "go now"})
+            end_a = drain_until(wsa, "RAID_END")
+            drain_until(wsb, "RAID_END")
 
+    assert end_a["victory"] is True
     h = client.get("/api/me/history", headers={"X-Client-ID": host}).json()
     assert len(h) == 1
     assert h[0]["room_code"] == code
-    assert h[0]["task_id"] == "test-echo"  # conftest 의 task_override
+    assert h[0]["task_id"] == "raid"
+    assert h[0]["result"] == "WIN"
