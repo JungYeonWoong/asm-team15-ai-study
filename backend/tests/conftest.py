@@ -14,9 +14,9 @@ from fastapi.testclient import TestClient
 
 from app.arena.ai_client import PROMPT_EVAL_SYSTEM, CallableAIClient
 from app.arena.domain import Task, TestCase
-from app.arena.game import GameServer
 from app.core.config import Settings
 from app.main import create_app
+from app.raid.server import RaidServer
 
 # 결정론적 테스트 과제 (N=4)
 TEST_TASK = Task(
@@ -104,9 +104,16 @@ class FakeWebSocket:
         return event in self.events
 
 
-def make_server(time_limit: float = 5.0) -> GameServer:
-    """결정론적 과제가 주입된 독립 GameServer (TestClient 무관)."""
-    srv = GameServer(Settings())
+def make_raid_server(
+    time_limit: float = 5.0,
+    *,
+    boss_hp: float | None = None,
+    max_rounds: int | None = None,
+) -> RaidServer:
+    """결정론적 과제가 주입된 독립 RaidServer (TestClient 무관)."""
+    srv = RaidServer(Settings())
     srv.task_override = TEST_TASK
     srv.time_limit = time_limit
+    srv.boss_hp_override = boss_hp
+    srv.max_rounds_override = max_rounds
     return srv

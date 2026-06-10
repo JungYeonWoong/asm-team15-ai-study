@@ -40,16 +40,27 @@ class TaskRepository:
                     description=p.description,
                     model=DEFAULT_MODEL,
                     test_cases=test_cases,
+                    difficulty=getattr(p, "difficulty", None) or "Mid",
                 )
             )
         self._pool = tuple(tasks)
 
-    def pick(self, rng: random.Random | None = None) -> Task:
-        """풀에서 무작위 과제 선택. DB 미로드 시 하드코딩 풀 fallback."""
+    def pick(
+        self, rng: random.Random | None = None, difficulty: str | None = None
+    ) -> Task:
+        """풀에서 과제 선택. ``difficulty`` 지정 시 해당 난이도 우선.
+
+        DB 미로드 시 하드코딩 풀로 fallback 한다.
+        """
         if self._pool:
             chooser = rng or random
-            return chooser.choice(self._pool)
-        return pick_task(rng)
+            pool = self._pool
+            if difficulty is not None:
+                filtered = tuple(t for t in self._pool if t.difficulty == difficulty)
+                if filtered:
+                    pool = filtered
+            return chooser.choice(pool)
+        return pick_task(rng, difficulty=difficulty)
 
     def list_public(self) -> list[dict]:
         """GET /api/tasks 응답용 — 정답 제외."""

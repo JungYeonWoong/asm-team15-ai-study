@@ -13,8 +13,13 @@ CREATE TABLE IF NOT EXISTS problems (
     problem_id   SERIAL PRIMARY KEY,
     title        VARCHAR(255) NOT NULL,
     description  TEXT         NOT NULL,
-    problem_type VARCHAR(50)  NOT NULL DEFAULT 'classification'
+    problem_type VARCHAR(50)  NOT NULL DEFAULT 'classification',
+    -- 보스 레이드 난이도 티어: 'Low' | 'Mid' | 'High'
+    difficulty   VARCHAR(10)  NOT NULL DEFAULT 'Mid'
 );
+
+-- 기존 DB 업그레이드 호환(컬럼이 없을 경우 추가)
+ALTER TABLE problems ADD COLUMN IF NOT EXISTS difficulty VARCHAR(10) NOT NULL DEFAULT 'Mid';
 
 CREATE TABLE IF NOT EXISTS problem_test_cases (
     test_case_id    SERIAL  PRIMARY KEY,

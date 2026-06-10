@@ -1,6 +1,6 @@
 """공용 의존성.
 
-- :func:`get_server`         : GameServer 접근
+- :func:`get_server`         : RaidServer 접근
 - :func:`get_auth_service`   : AuthService 접근
 - :func:`get_history_store`  : 결과 기록 저장소
 - :func:`get_current_user`   : Authorization Bearer 우선, X-Client-ID 폴백
@@ -14,12 +14,12 @@ from typing import TYPE_CHECKING, Optional
 from fastapi import Header, HTTPException, Request
 
 if TYPE_CHECKING:
-    from app.arena.game import GameServer
     from app.auth.service import AuthService
     from app.history.store import HistoryStore
+    from app.raid.server import RaidServer
 
 
-def get_server(request: Request) -> "GameServer":
+def get_server(request: Request) -> "RaidServer":
     return request.app.state.server
 
 
